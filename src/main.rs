@@ -67,11 +67,12 @@ const GESTURE_QUIET_START_HOUR: u8 = 0;
 const GESTURE_QUIET_END_HOUR: u8 = 5;
 const GESTURE_QUIET_CHECK_SECS: u64 = 60;
 const SCREEN_OFF_HOUSEKEEPING_SECS: u64 = 600;
-const GESTURE_CHECK_INTERVAL_MSECS: u64 = 1000;
+const GESTURE_CHECK_INTERVAL_MSECS: u64 = 1100;
 const GESTURE_TARGET_X: f32 = 0.32;
 const GESTURE_TARGET_Y: f32 = -0.04;
 const GESTURE_TARGET_Z: f32 = -0.93;
 const GESTURE_TOLERANCE: f32 = 0.4;
+const LOG_GESTURES: bool = false;
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task]
@@ -733,7 +734,7 @@ async fn main(_spawner: Spawner) {
                 if need_motion_imu {
                     watchface.update_accel(a.x, a.y, a.z);
                 }
-                if need_gesture_accel && now >= next_gesture_accel_log {
+                if LOG_GESTURES && need_gesture_accel && now >= next_gesture_accel_log {
                     println!(
                         "[GESTURE] accel x={:.2}g y={:.2}g z={:.2}g {}",
                         a.x,
