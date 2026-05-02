@@ -66,7 +66,7 @@ const AOD_DURATION_SECS: u64 = 30;
 const GESTURE_TARGET_X: f32 = 0.32;
 const GESTURE_TARGET_Y: f32 = -0.04;
 const GESTURE_TARGET_Z: f32 = -0.93;
-const GESTURE_TOLERANCE: f32 = 0.1;
+const GESTURE_TOLERANCE: f32 = 0.4;
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task]
