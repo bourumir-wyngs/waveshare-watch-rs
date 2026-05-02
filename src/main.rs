@@ -62,7 +62,12 @@ use crate::peripherals::audio::{Es8311, fill_beep_buffer};
 const AOD_BRIGHTNESS: u8 = 0xCC; // ~80%
 const DIM_AFTER_IDLE_SECS: u64 = 8;
 const AOD_AFTER_IDLE_SECS: u64 = 15;
-const AOD_DURATION_SECS: u64 = 30;
+const AOD_DURATION_SECS: u64 = 7;
+const GESTURE_QUIET_START_HOUR: u8 = 0;
+const GESTURE_QUIET_END_HOUR: u8 = 5;
+const GESTURE_QUIET_CHECK_SECS: u64 = 60;
+const SCREEN_OFF_HOUSEKEEPING_SECS: u64 = 600;
+const GESTURE_CHECK_INTERVAL_MSECS: u64 = 1000;
 const GESTURE_TARGET_X: f32 = 0.32;
 const GESTURE_TARGET_Y: f32 = -0.04;
 const GESTURE_TARGET_Z: f32 = -0.93;
@@ -159,6 +164,15 @@ fn gesture_aod_pose(x: f32, y: f32, z: f32) -> bool {
     (x - GESTURE_TARGET_X).abs() <= GESTURE_TOLERANCE
         && (y - GESTURE_TARGET_Y).abs() <= GESTURE_TOLERANCE
         && (z - GESTURE_TARGET_Z).abs() <= GESTURE_TOLERANCE
+}
+
+fn gesture_quiet_hours(dt: &DateTime) -> bool {
+    let hour = dt.hours;
+    if GESTURE_QUIET_START_HOUR < GESTURE_QUIET_END_HOUR {
+        hour >= GESTURE_QUIET_START_HOUR && hour < GESTURE_QUIET_END_HOUR
+    } else {
+        hour >= GESTURE_QUIET_START_HOUR || hour < GESTURE_QUIET_END_HOUR
+    }
 }
 
 use embedded_graphics::pixelcolor::Rgb565;
@@ -538,6 +552,7 @@ async fn main(_spawner: Spawner) {
     let mut page_dirty = true;
     let mut swiping = false;
     let mut last_interaction = Instant::now();
+    let mut gesture_quiet_active = false;
     // screen_state levels:
     //   3 = full bright (interactive)
     //   2 = dim (transition)
@@ -564,6 +579,7 @@ async fn main(_spawner: Spawner) {
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year);
+        gesture_quiet_active = gesture_quiet_hours(&dt);
     }
     watchface.force_redraw();
     let _ = watchface.render(&mut fb);
@@ -593,6 +609,7 @@ async fn main(_spawner: Spawner) {
     use embassy_futures::select::select3;
 
     let mut next_rtc = Instant::now();
+    let mut next_gesture_quiet_check = Instant::now();
     let mut next_battery = Instant::now();
     let mut last_frame = Instant::now();
     let mut next_watchface_flush = Instant::now();
@@ -629,21 +646,17 @@ async fn main(_spawner: Spawner) {
             // long-press, but no faster than necessary.
             Duration::from_millis(16) // ~60 Hz
         } else if screen_state == 0 {
-            // Screen completely off: normally only wake every 30 s for housekeeping.
+            // Screen completely off: normally only wake every 10 min for housekeeping.
             // Gesture diagnostics need a 1 Hz tick so accel reads continue while off.
-            if watchface.gesture_enabled {
-                Duration::from_secs(1)
+            if watchface.gesture_enabled && !gesture_quiet_active {
+                Duration::from_millis(GESTURE_CHECK_INTERVAL_MSECS)
             } else {
-                Duration::from_secs(30)
+                Duration::from_secs(SCREEN_OFF_HOUSEKEEPING_SECS)
             }
         } else if screen_state == 1 {
             // AOD mode: wake every 10 s to check if a new minute has started.
             // We don't need exactly 60 s precision because the user only sees minutes change.
-            if watchface.gesture_enabled {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(10)
-            }
+            Duration::from_secs(10)
         } else {
             match app_state {
                 AppState::Watchface => match current_page {
@@ -697,7 +710,7 @@ async fn main(_spawner: Spawner) {
                 || app_state == AppState::Tetris
                 || app_state == AppState::Flappy
                 || (app_state == AppState::Watchface && current_page == Page::Sensors));
-        let need_gesture_accel = watchface.gesture_enabled;
+        let need_gesture_accel = watchface.gesture_enabled && screen_state == 0 && !gesture_quiet_active;
         let target_imu_mode = if need_motion_imu {
             2
         } else if need_gesture_accel {
@@ -740,12 +753,6 @@ async fn main(_spawner: Spawner) {
                         aod_entered_at = now;
                         aod_last_minute = 99;
                     }
-                    if screen_state == 1 {
-                        // Keep gesture-triggered AOD alive while the watch remains
-                        // in the calibrated pose. Once it leaves this pose, the
-                        // normal AOD duration timer starts from this last match.
-                        aod_entered_at = now;
-                    }
                 }
             }
         }
@@ -758,12 +765,23 @@ async fn main(_spawner: Spawner) {
             }
         }
 
+        // Keep the gesture quiet-hours gate current even when the display is off.
+        // Gesture wake is disabled from 00:00 through 04:59, but touch/button
+        // wake still works because those are handled by GPIO interrupts above.
+        if now >= next_gesture_quiet_check {
+            if let Ok(dt) = rtc.get_time() {
+                gesture_quiet_active = gesture_quiet_hours(&dt);
+            }
+            next_gesture_quiet_check = now + Duration::from_secs(GESTURE_QUIET_CHECK_SECS);
+        }
+
         // RTC: 1 Hz update is enough for a clock display. Skip when screen is off OR in AOD
         // (AOD updates the RTC manually once per minute).
         if screen_state >= 2 && now >= next_rtc {
             if let Ok(dt) = rtc.get_time() {
                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                 watchface.update_date(dt.day, dt.month, dt.year);
+                gesture_quiet_active = gesture_quiet_hours(&dt);
             }
             next_rtc = now + Duration::from_secs(1);
         }
