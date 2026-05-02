@@ -129,7 +129,7 @@ impl WatchFace {
             full_redraw: true, time_changed: false, battery_changed: false, gyro_changed: false,
             wifi_connected: false,
             ble_on: false,
-            gesture_enabled: false,
+            gesture_enabled: true,
             gyro_enabled: false, // off by default to save battery
             brightness: 0xA0,   // default ~63%
             cpu_mhz: 160,

@@ -30,6 +30,10 @@ use esp_hal::dma_buffers;
 use esp_hal::gpio::{InputConfig, Level, Output, OutputConfig, Pull, Input};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::interrupt::software::SoftwareInterruptControl;
+use esp_hal::rtc_cntl::{
+    sleep::{Ext0WakeupSource, TimerWakeupSource, WakeupLevel},
+    Rtc as EspRtc,
+};
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::time::Rate;
@@ -176,6 +180,23 @@ fn gesture_quiet_hours(dt: &DateTime) -> bool {
     }
 }
 
+fn secs_until_gesture_quiet_end(dt: &DateTime) -> Option<u64> {
+    if !gesture_quiet_hours(dt) {
+        return None;
+    }
+
+    let now_secs =
+        dt.hours as u64 * 3600 + dt.minutes as u64 * 60 + dt.seconds as u64;
+    let end_secs = GESTURE_QUIET_END_HOUR as u64 * 3600;
+    let secs = if now_secs < end_secs {
+        end_secs - now_secs
+    } else {
+        24 * 3600 - now_secs + end_secs
+    };
+
+    Some(secs.max(1))
+}
+
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::RgbColor;
 
@@ -249,6 +270,7 @@ async fn main(_spawner: Spawner) {
     println!("=== Waveshare Watch RS v0.4 (Embassy) ===");
 
     let delay = Delay::new();
+    let mut esp_rtc = EspRtc::new(peripherals.LPWR);
 
     // === I2C Bus ===
     let i2c = I2c::new(
@@ -517,7 +539,10 @@ async fn main(_spawner: Spawner) {
     // a task from inside the main loop.
     _spawner.spawn(net_task(runner)).ok();
 
-    let mut boot_button = Input::new(peripherals.GPIO0, InputConfig::default().with_pull(Pull::Up));
+    // Keep the GPIO0 owner available so the deep-sleep path can drop this
+    // Input and hand the same pin to RTC wake as BOOT.
+    let mut boot_pin = peripherals.GPIO0;
+    let mut boot_button = Input::new(boot_pin.reborrow(), InputConfig::default().with_pull(Pull::Up));
     println!("=== All systems GO! (Embassy async, WiFi OFF) ===");
 
     // === State ===
@@ -774,6 +799,35 @@ async fn main(_spawner: Spawner) {
                 gesture_quiet_active = gesture_quiet_hours(&dt);
             }
             next_gesture_quiet_check = now + Duration::from_secs(GESTURE_QUIET_CHECK_SECS);
+        }
+
+        // Night sleep: once the panel is fully off, the housekeeping RTC read is
+        // enough to decide whether to stop the ESP32-S3 completely until 05:00.
+        // BOOT/GPIO0 is configured as an early wake source; touch is not RTC-wake
+        // capable on this board.
+        if screen_state == 0 && gesture_quiet_active {
+            if let Ok(dt) = rtc.get_time() {
+                if let Some(sleep_secs) = secs_until_gesture_quiet_end(&dt) {
+                    println!(
+                        "[SLEEP] deep sleep {:02}:{:02}:{:02} -> {:02}:00 ({}s), BOOT wake enabled",
+                        dt.hours,
+                        dt.minutes,
+                        dt.seconds,
+                        GESTURE_QUIET_END_HOUR,
+                        sleep_secs,
+                    );
+                    display.set_brightness(0x00);
+                    display.display_off();
+                    let _ = imu.power_down();
+                    Timer::after(Duration::from_millis(50)).await;
+
+                    drop(boot_button);
+                    let timer_wake =
+                        TimerWakeupSource::new(core::time::Duration::from_secs(sleep_secs));
+                    let boot_wake = Ext0WakeupSource::new(boot_pin, WakeupLevel::Low);
+                    esp_rtc.sleep_deep(&[&timer_wake, &boot_wake]);
+                }
+            }
         }
 
         // RTC: 1 Hz update is enough for a clock display. Skip when screen is off OR in AOD
