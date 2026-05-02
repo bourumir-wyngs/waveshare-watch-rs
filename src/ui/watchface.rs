@@ -41,15 +41,21 @@ const WIFI_TOGGLE_W: i32 = 56;
 const WIFI_TOGGLE_H: i32 = 28;
 const WIFI_KNOB_R: i32 = 10;
 
+// Gesture toggle switch geometry (below WiFi)
+const GESTURE_TOGGLE_X: i32 = 50;
+const GESTURE_TOGGLE_Y: i32 = 335;
+const GESTURE_TOGGLE_W: i32 = 56;
+const GESTURE_TOGGLE_H: i32 = 28;
+
 // Brightness slider geometry
 const BRI_SLIDER_X: i32 = 160;
 const BRI_SLIDER_Y: i32 = 278;
 const BRI_SLIDER_W: i32 = 180;
 const BRI_SLIDER_H: i32 = 22;
 
-// CPU freq button geometry (below WiFi toggle)
+// CPU freq button geometry (below the radio/gesture toggles)
 const CPU_BTN_X: i32 = 42;
-const CPU_BTN_Y: i32 = 327;
+const CPU_BTN_Y: i32 = 380;
 const CPU_BTN_W: i32 = 72;
 const CPU_BTN_H: i32 = 28;
 
@@ -103,6 +109,7 @@ pub struct WatchFace {
     full_redraw: bool, time_changed: bool, battery_changed: bool, gyro_changed: bool,
     pub wifi_connected: bool,
     pub ble_on: bool,
+    pub gesture_enabled: bool,
     pub gyro_enabled: bool,
     /// Display brightness 0..255, controlled by the slider on the watchface.
     pub brightness: u8,
@@ -122,6 +129,7 @@ impl WatchFace {
             full_redraw: true, time_changed: false, battery_changed: false, gyro_changed: false,
             wifi_connected: false,
             ble_on: false,
+            gesture_enabled: false,
             gyro_enabled: false, // off by default to save battery
             brightness: 0xA0,   // default ~63%
             cpu_mhz: 160,
@@ -180,6 +188,16 @@ impl WatchFace {
             && xi <= WIFI_TOGGLE_X + WIFI_TOGGLE_W + 10
             && yi >= WIFI_TOGGLE_Y - 10
             && yi <= WIFI_TOGGLE_Y + WIFI_TOGGLE_H + 10
+    }
+
+    /// Hit-test for the Gesture toggle switch.
+    pub fn is_gesture_zone(x: u16, y: u16) -> bool {
+        let xi = x as i32;
+        let yi = y as i32;
+        xi >= GESTURE_TOGGLE_X - 10
+            && xi <= GESTURE_TOGGLE_X + GESTURE_TOGGLE_W + 10
+            && yi >= GESTURE_TOGGLE_Y - 10
+            && yi <= GESTURE_TOGGLE_Y + GESTURE_TOGGLE_H + 10
     }
 
     /// Hit-test for the brightness slider. Returns Some(brightness 0..255)
@@ -333,6 +351,42 @@ impl WatchFace {
         // Label
         let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
         Text::new("WiFi", Point::new(x + 2, y - 4), dim).draw(d)?;
+
+        Ok(())
+    }
+
+    /// Draw the Gesture toggle pill below WiFi.
+    fn draw_gesture_toggle<D: DrawTarget<Color = Rgb565>>(
+        d: &mut D,
+        on: bool,
+    ) -> Result<(), D::Error> {
+        let x = GESTURE_TOGGLE_X;
+        let y = GESTURE_TOGGLE_Y;
+        let w = GESTURE_TOGGLE_W;
+        let h = GESTURE_TOGGLE_H;
+        let r = h / 2;
+        let kr = 10i32;
+
+        let track_color = if on { Rgb565::new(31, 22, 0) } else { Rgb565::new(6, 12, 6) };
+        RoundedRectangle::with_equal_corners(
+            Rectangle::new(Point::new(x, y), Size::new(w as u32, h as u32)),
+            Size::new(r as u32, r as u32),
+        ).into_styled(PrimitiveStyle::with_fill(track_color)).draw(d)?;
+
+        let knob_cx = if on { x + w - r } else { x + r };
+        let knob_cy = y + h / 2;
+        Circle::new(
+            Point::new(knob_cx - kr, knob_cy - kr),
+            (kr * 2) as u32,
+        ).into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE)).draw(d)?;
+
+        let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
+        Text::with_alignment(
+            "Gesture",
+            Point::new(x + w / 2, y - 4),
+            dim,
+            Alignment::Center,
+        ).draw(d)?;
 
         Ok(())
     }
@@ -507,9 +561,8 @@ impl WatchFace {
         let cy = h / 2 - 32 + shift_y;
 
         // HH:MM only (no seconds, no extra widgets).
-        // We use a slightly dimmed white (CSS_LIGHT_GRAY = ~0.8 brightness) to further reduce power
-        // because each AMOLED sub-pixel scales current with luminance.
-        let dim_white = Rgb565::new(20, 40, 20); // ~50% gray, looks white-ish on AMOLED but uses ~half the current
+        // About 80% white. The panel brightness is also set to ~80% when AOD is active.
+        let dim_white = Rgb565::new(25, 50, 25);
 
         // Draw HH:MM using the segment renderer. Pass 99 for seconds to indicate "skip seconds".
         // The segments::draw_time function draws all 8 chars; we'll use a custom call.
@@ -563,7 +616,10 @@ impl WatchFace {
             // === WiFi toggle switch (iOS-style pill) ===
             Self::draw_wifi_toggle(d, self.wifi_connected)?;
 
-            // === CPU freq button (below WiFi toggle) ===
+            // === Gesture toggle switch ===
+            Self::draw_gesture_toggle(d, self.gesture_enabled)?;
+
+            // === CPU freq button (below the toggle stack) ===
             Self::draw_cpu_button(d, self.cpu_mhz)?;
 
             // === Brightness slider (horizontal bar) ===

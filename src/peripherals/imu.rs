@@ -102,7 +102,12 @@ impl<I: I2c> Qmi8658Imu<I> {
         self.write_reg(REG_CTRL7, 0x00)
     }
 
-    /// Power up accelerometer + gyroscope. Call before reading.
+    /// Power up only the accelerometer. Use for low-power posture/gesture reads.
+    pub fn power_up_accel(&mut self) -> Result<(), I::Error> {
+        self.write_reg(REG_CTRL7, 0x01)
+    }
+
+    /// Power up accelerometer + gyroscope. Call before reading full IMU data.
     pub fn power_up(&mut self) -> Result<(), I::Error> {
         self.write_reg(REG_CTRL7, 0x03)
     }

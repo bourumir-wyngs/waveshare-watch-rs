@@ -59,6 +59,15 @@ use crate::apps::mp3player::Mp3Player;
 use crate::apps::smarthome::SmartHomeApp;
 use crate::peripherals::audio::{Es8311, fill_beep_buffer};
 
+const AOD_BRIGHTNESS: u8 = 0xCC; // ~80%
+const DIM_AFTER_IDLE_SECS: u64 = 8;
+const AOD_AFTER_IDLE_SECS: u64 = 15;
+const AOD_DURATION_SECS: u64 = 30;
+const GESTURE_TARGET_X: f32 = 0.32;
+const GESTURE_TARGET_Y: f32 = -0.04;
+const GESTURE_TARGET_Z: f32 = -0.93;
+const GESTURE_TOLERANCE: f32 = 0.1;
+
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::WifiDevice<'static>>) -> ! {
@@ -144,6 +153,12 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
         m += 1;
     }
     (y as u32, (m + 1) as u32, (remaining + 1) as u32)
+}
+
+fn gesture_aod_pose(x: f32, y: f32, z: f32) -> bool {
+    (x - GESTURE_TARGET_X).abs() <= GESTURE_TOLERANCE
+        && (y - GESTURE_TARGET_Y).abs() <= GESTURE_TOLERANCE
+        && (z - GESTURE_TARGET_Z).abs() <= GESTURE_TOLERANCE
 }
 
 use embedded_graphics::pixelcolor::Rgb565;
@@ -529,6 +544,7 @@ async fn main(_spawner: Spawner) {
     //   1 = AOD (Always-On Display: super-dim, minimal HH:MM, 1 update / minute)
     //   0 = full off (DISPOFF + SLPIN)
     let mut screen_state: u8 = 3;
+    let mut aod_entered_at = Instant::now();
     // Tracks the last minute we rendered in AOD so we update the screen exactly
     // once per minute, not faster. Saves both DMA bandwidth and AMOLED current.
     let mut aod_last_minute: u8 = 99;
@@ -580,6 +596,7 @@ async fn main(_spawner: Spawner) {
     let mut next_battery = Instant::now();
     let mut last_frame = Instant::now();
     let mut next_watchface_flush = Instant::now();
+    let mut next_gesture_accel_log = Instant::now();
     // Radio state: we track both what the user *wants* and what the radio
     // actually is. They drift apart briefly during connect/disconnect.
     let mut wifi_on_request: bool = false;      // user toggle
@@ -594,7 +611,8 @@ async fn main(_spawner: Spawner) {
     let mut ble_toggle_request: bool = false;
     // Power-down the IMU at boot — only enable when a consumer (gyro toggle, game, sensors page) needs it.
     let _ = imu.power_down();
-    let mut imu_powered = false;
+    // IMU mode: 0 = off, 1 = accel only, 2 = accel + gyro.
+    let mut imu_mode: u8 = 0;
     // Tracks the previous-iteration state of the FT3168 INT line.
     // We need this to keep polling touch.poll() ONCE more after the finger lifts,
     // otherwise we miss the swipe-end event and pages stay stuck mid-drag.
@@ -611,13 +629,21 @@ async fn main(_spawner: Spawner) {
             // long-press, but no faster than necessary.
             Duration::from_millis(16) // ~60 Hz
         } else if screen_state == 0 {
-            // Screen completely off: only wake every 30 s for housekeeping (battery refresh).
-            // GPIO falling edges still wake us instantly.
-            Duration::from_secs(30)
+            // Screen completely off: normally only wake every 30 s for housekeeping.
+            // Gesture diagnostics need a 1 Hz tick so accel reads continue while off.
+            if watchface.gesture_enabled {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(30)
+            }
         } else if screen_state == 1 {
             // AOD mode: wake every 10 s to check if a new minute has started.
             // We don't need exactly 60 s precision because the user only sees minutes change.
-            Duration::from_secs(10)
+            if watchface.gesture_enabled {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(10)
+            }
         } else {
             match app_state {
                 AppState::Watchface => match current_page {
@@ -665,24 +691,65 @@ async fn main(_spawner: Spawner) {
         // IMU only when an interactive consumer needs it (gyro enabled, IMU-driven game, sensors page).
         // When screen is off OR no consumer needs it, we power-down the IMU completely
         // (CTRL7 = 0). The QMI8658's gyro alone draws ~1.5 mA so this is a meaningful win.
-        let need_imu = screen_state >= 2
+        let need_motion_imu = screen_state >= 2
             && (watchface.gyro_enabled
                 || app_state == AppState::Maze
                 || app_state == AppState::Tetris
                 || app_state == AppState::Flappy
                 || (app_state == AppState::Watchface && current_page == Page::Sensors));
-        if need_imu && !imu_powered {
-            let _ = imu.power_up();
-            imu_powered = true;
-        } else if !need_imu && imu_powered {
-            let _ = imu.power_down();
-            imu_powered = false;
+        let need_gesture_accel = watchface.gesture_enabled;
+        let target_imu_mode = if need_motion_imu {
+            2
+        } else if need_gesture_accel {
+            1
+        } else {
+            0
+        };
+        if target_imu_mode != imu_mode {
+            match target_imu_mode {
+                2 => { let _ = imu.power_up(); }
+                1 => { let _ = imu.power_up_accel(); }
+                _ => { let _ = imu.power_down(); }
+            }
+            imu_mode = target_imu_mode;
         }
-        if need_imu {
+        if need_motion_imu || need_gesture_accel {
             if let Ok(a) = imu.read_accel() {
                 accel = (a.x, a.y, a.z);
-                watchface.update_accel(a.x, a.y, a.z);
+                let gesture_pose_match = need_gesture_accel && gesture_aod_pose(a.x, a.y, a.z);
+                if need_motion_imu {
+                    watchface.update_accel(a.x, a.y, a.z);
+                }
+                if need_gesture_accel && now >= next_gesture_accel_log {
+                    println!(
+                        "[GESTURE] accel x={:.2}g y={:.2}g z={:.2}g {}",
+                        a.x,
+                        a.y,
+                        a.z,
+                        if gesture_pose_match { "ON" } else { "OFF" },
+                    );
+                    next_gesture_accel_log = now + Duration::from_secs(1);
+                }
+                if gesture_pose_match {
+                    if screen_state == 0 {
+                        println!("[GESTURE] AOD pose detected; waking display to AOD");
+                        display.display_on();
+                        Timer::after(Duration::from_millis(20)).await;
+                        display.set_brightness(AOD_BRIGHTNESS);
+                        screen_state = 1;
+                        aod_entered_at = now;
+                        aod_last_minute = 99;
+                    }
+                    if screen_state == 1 {
+                        // Keep gesture-triggered AOD alive while the watch remains
+                        // in the calibrated pose. Once it leaves this pose, the
+                        // normal AOD duration timer starts from this last match.
+                        aod_entered_at = now;
+                    }
+                }
             }
+        }
+        if need_motion_imu {
             if let Ok(g) = imu.read_gyro() {
                 gyro_data = ((g.x * 10.0) as i16, (g.y * 10.0) as i16, (g.z * 10.0) as i16);
             }
@@ -759,13 +826,17 @@ async fn main(_spawner: Spawner) {
                                         if let Ok(dt) = rtc.get_time() { wf2.update_time(dt.hours, dt.minutes, dt.seconds); }
                                         wf2.update_battery(batt_pct, batt_mv, charging);
                                         wf2.wifi_connected = wifi_connected;
+                                        wf2.ble_on = ble_on;
+                                        wf2.gesture_enabled = watchface.gesture_enabled;
+                                        wf2.brightness = watchface.brightness;
+                                        wf2.cpu_mhz = watchface.cpu_mhz;
                                         wf2.force_redraw();
                                         let _ = wf2.render(&mut fb);
                                     }
                                     Page::Sensors => { let _ = pages::draw_sensors_page(&mut fb, 0,0,0,0,0,0,0); }
                                     Page::System => { let _ = pages::draw_system_page(&mut fb, batt_mv, batt_pct, charging); }
                                     Page::Power => {
-                                        update_power_stats(&mut power_stats, screen_state, imu_powered,
+                                        update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
                                             wifi_connected, wifi_on_request, watchface.brightness,
                                             batt_mv, batt_pct, charging);
                                         let _ = power_page::draw_power_page(&mut fb, &power_stats);
@@ -842,11 +913,11 @@ async fn main(_spawner: Spawner) {
         // === Screen sleep/wake state machine ===
         // Levels:
         //   3 = full bright + interactive (default)
-        //   2 = dim brightness, still interactive (transition state at 20 s idle)
-        //   1 = AOD: minimal HH:MM, super-dim, 1 update/min, no I/O
+        //   2 = dim brightness, still interactive
+        //   1 = AOD: minimal HH:MM, 80% brightness, 1 update/min, no touch I/O
         //   0 = full off (DISPOFF + SLPIN), only GPIO interrupts can wake
         //
-        // Transitions on idle: 3 → (20s) → 2 → (40s) → 1 (AOD) → (10min) → 0 (off)
+        // Transitions on idle: 3 -> 8s -> 2 -> 15s -> 1 (AOD) -> 30s in AOD -> 0 (off)
         // Any touch/button bumps us straight back to 3.
         let any_touch = touch_int.is_low();
         if any_touch || swipe_event.is_some() || tap_event || boot_button.is_low() {
@@ -868,16 +939,20 @@ async fn main(_spawner: Spawner) {
             }
         }
         let idle_secs = (now - last_interaction).as_secs();
-        // 3 min in AOD → fully off (was 10 min — aggressive saves ~8 mA×7 min)
-        if idle_secs >= 180 && screen_state > 0 {
+        let aod_secs = if screen_state == 1 {
+            (now - aod_entered_at).as_secs()
+        } else {
+            0
+        };
+        if screen_state == 1 && aod_secs >= AOD_DURATION_SECS {
             display.set_brightness(0x00);
             display.display_off();
             screen_state = 0;
-        // 15 s idle → AOD (was 40 s — faster dim saves ~45 mA×25 s every cycle)
-        } else if idle_secs >= 15 && screen_state > 1 {
+        } else if idle_secs >= AOD_AFTER_IDLE_SECS && screen_state > 1 {
             if app_state == AppState::Watchface && current_page == Page::Clock {
-                display.set_brightness(0x18); // very dim, ~10% of normal
+                display.set_brightness(AOD_BRIGHTNESS);
                 screen_state = 1;
+                aod_entered_at = now;
                 aod_last_minute = 99; // force first AOD frame
             } else {
                 // Not on the clock face → no AOD, just go straight to off
@@ -885,8 +960,7 @@ async fn main(_spawner: Spawner) {
                 display.display_off();
                 screen_state = 0;
             }
-        // 8 s idle → dim transition (was 20 s)
-        } else if idle_secs >= 8 && screen_state > 2 {
+        } else if idle_secs >= DIM_AFTER_IDLE_SECS && screen_state > 2 {
             display.set_brightness(0x40);
             screen_state = 2;
         }
@@ -1039,7 +1113,7 @@ async fn main(_spawner: Spawner) {
                                 // Subsequent frames will only redraw every
                                 // ~1 s (see below) to keep the diagnostic
                                 // itself cheap.
-                                update_power_stats(&mut power_stats, screen_state, imu_powered,
+                                update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
                                     wifi_connected, wifi_on_request, watchface.brightness,
                                     batt_mv, batt_pct, charging);
                                 let _ = power_page::draw_power_page(&mut fb, &power_stats);
@@ -1071,7 +1145,7 @@ async fn main(_spawner: Spawner) {
                             // and the diagnostic itself starts to skew the
                             // measurement it's supposed to report.
                             if now >= next_watchface_flush {
-                                update_power_stats(&mut power_stats, screen_state, imu_powered,
+                                update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
                                     wifi_connected, wifi_on_request, watchface.brightness,
                                     batt_mv, batt_pct, charging);
                                 let _ = power_page::draw_power_page(&mut fb, &power_stats);
@@ -1110,6 +1184,12 @@ async fn main(_spawner: Spawner) {
                         // WiFi toggle
                         } else if WatchFace::is_wifi_zone(last_touch_x, last_touch_y) {
                             wifi_toggle_request = true;
+                            watchface.force_redraw();
+                            page_dirty = true;
+                        // Gesture toggle: enables low-rate accelerometer diagnostics.
+                        } else if WatchFace::is_gesture_zone(last_touch_x, last_touch_y) {
+                            watchface.gesture_enabled = !watchface.gesture_enabled;
+                            println!("Gesture: {}", if watchface.gesture_enabled { "ON" } else { "OFF" });
                             watchface.force_redraw();
                             page_dirty = true;
                         // CPU frequency cycle (live DVFS)
