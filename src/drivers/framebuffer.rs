@@ -133,15 +133,6 @@ impl Framebuffer {
         display.bus_mut().end_pixels();
     }
 
-    /// Get raw buffer for direct access.
-    pub fn buffer(&self) -> &[u16] {
-        &self.buf
-    }
-
-    /// Get mutable raw buffer for direct access (snapshot restore).
-    pub fn buffer_mut(&mut self) -> &mut [u16] {
-        &mut self.buf
-    }
 }
 
 impl OriginDimensions for Framebuffer {

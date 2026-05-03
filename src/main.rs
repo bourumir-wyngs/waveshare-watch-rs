@@ -9,8 +9,6 @@ mod peripherals;
 mod ui;
 mod apps;
 
-use alloc::vec;
-use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use embedded_graphics_core::prelude::RawData;
@@ -576,7 +574,6 @@ async fn main(_spawner: Spawner) {
     let mut batt_mv: u16 = 0;
     let mut charging = false;
     let mut page_dirty = true;
-    let mut swiping = false;
     let mut last_interaction = Instant::now();
     let mut gesture_quiet_active = false;
     // screen_state levels:
@@ -589,11 +586,6 @@ async fn main(_spawner: Spawner) {
     // Tracks the last minute we rendered in AOD so we update the screen exactly
     // once per minute, not faster. Saves both DMA bandwidth and AMOLED current.
     let mut aod_last_minute: u8 = 99;
-    let mut swipe_dir: i32 = 0;
-    let mut swipe_start_x: i32 = 0;
-    let pixel_count = board::LCD_WIDTH as usize * board::LCD_HEIGHT as usize;
-    let mut snap_current: Vec<u16> = vec![0u16; pixel_count];
-    let mut snap_target: Vec<u16> = vec![0u16; pixel_count];
 
     // Initial render
     if let Ok(pct) = power.get_battery_percent() {
@@ -873,113 +865,46 @@ async fn main(_spawner: Spawner) {
         was_touching = int_low;
         if touch_active {
             if let Ok((point, event)) = touch.poll() {
-            // Swipe handling for page navigation (only in Watchface mode)
-            if app_state == AppState::Watchface {
-                if let Some(tp) = point {
-                    last_touch_x = tp.x;
-                    last_touch_y = tp.y;
-                    // Don't start a page swipe if the finger is on the
-                    // brightness slider — horizontal drag there adjusts
-                    // brightness, not pages.
-                    let on_slider = current_page == Page::Clock
-                        && WatchFace::brightness_from_tap(tp.x, tp.y).is_some();
-                    if !swiping && !on_slider {
-                        if swipe_start_x == 0 { swipe_start_x = tp.x as i32; }
-                        else {
-                            let dx = tp.x as i32 - swipe_start_x;
-                            if dx.unsigned_abs() > 30 {
-                                swiping = true;
-                                swipe_dir = if dx < 0 { -1 } else { 1 };
-                                snap_current.copy_from_slice(fb.buffer());
-                                let target = if swipe_dir < 0 { current_page.next() } else { current_page.prev() };
-                                fb.clear_color(target.color());
-                                match target {
-                                    Page::Clock => {
-                                        let mut wf2 = WatchFace::new();
-                                        if let Ok(dt) = rtc.get_time() { wf2.update_time(dt.hours, dt.minutes, dt.seconds); }
-                                        wf2.update_battery(batt_pct, batt_mv, charging);
-                                        wf2.wifi_connected = wifi_connected;
-                                        wf2.ble_on = ble_on;
-                                        wf2.gesture_enabled = watchface.gesture_enabled;
-                                        wf2.brightness = watchface.brightness;
-                                        wf2.cpu_mhz = watchface.cpu_mhz;
-                                        wf2.force_redraw();
-                                        let _ = wf2.render(&mut fb);
-                                    }
-                                    Page::Sensors => { let _ = pages::draw_sensors_page(&mut fb, 0,0,0,0,0,0,0); }
-                                    Page::System => { let _ = pages::draw_system_page(&mut fb, batt_mv, batt_pct, charging); }
-                                    Page::Power => {
-                                        update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
-                                            wifi_connected, wifi_on_request, watchface.brightness,
-                                            batt_mv, batt_pct, charging);
-                                        let _ = power_page::draw_power_page(&mut fb, &power_stats);
-                                    }
-                                }
-                                snap_target.copy_from_slice(fb.buffer());
+                // Swipe handling for page navigation (only in Watchface mode)
+                if app_state == AppState::Watchface {
+                    if let Some(tp) = point {
+                        last_touch_x = tp.x;
+                        last_touch_y = tp.y;
+                    }
+                    if let Some(swipe) = event {
+                        // Horizontal page swipes now switch immediately on release.
+                        // The old live slide transition streamed partial frames while
+                        // dragging, which could saturate the display bus and stutter.
+                        let on_slider = current_page == Page::Clock
+                            && WatchFace::brightness_from_tap(swipe.start_x, swipe.start_y).is_some();
+                        match swipe.direction {
+                            SwipeDirection::Left if !on_slider => {
+                                current_page = current_page.next();
+                                page_dirty = true;
+                                next_watchface_flush = now;
+                            }
+                            SwipeDirection::Right if !on_slider => {
+                                current_page = current_page.prev();
+                                page_dirty = true;
+                                next_watchface_flush = now;
+                            }
+                            _ => {
+                                swipe_event = Some(swipe.direction);
+                                tap_event = swipe.direction == SwipeDirection::Tap;
                             }
                         }
                     }
-                    if swiping {
-                        let delta = (tp.x as i32 - swipe_start_x).clamp(-(board::LCD_WIDTH as i32), board::LCD_WIDTH as i32);
-                        let offset = ((delta * swipe_dir).clamp(0, board::LCD_WIDTH as i32) as usize) & !1;
-                        let w = board::LCD_WIDTH as usize;
-                        let h = board::LCD_HEIGHT as usize;
-                        if offset > 0 && offset < w {
-                            if swipe_dir < 0 {
-                                display.set_addr_window(0, 0, (w-offset) as u16, h as u16);
-                                display.bus_mut().begin_pixels();
-                                for row in 0..h { display.bus_mut().stream_pixels(&snap_current[row*w+offset..row*w+w]); }
-                                display.bus_mut().end_pixels();
-                                display.set_addr_window((w-offset) as u16, 0, offset as u16, h as u16);
-                                display.bus_mut().begin_pixels();
-                                for row in 0..h { display.bus_mut().stream_pixels(&snap_target[row*w..row*w+offset]); }
-                                display.bus_mut().end_pixels();
-                            } else {
-                                display.set_addr_window(0, 0, offset as u16, h as u16);
-                                display.bus_mut().begin_pixels();
-                                for row in 0..h { display.bus_mut().stream_pixels(&snap_target[row*w+w-offset..row*w+w]); }
-                                display.bus_mut().end_pixels();
-                                display.set_addr_window(offset as u16, 0, (w-offset) as u16, h as u16);
-                                display.bus_mut().begin_pixels();
-                                for row in 0..h { display.bus_mut().stream_pixels(&snap_current[row*w..row*w+w-offset]); }
-                                display.bus_mut().end_pixels();
-                            }
-                        }
+                } else {
+                    // In app mode: track position + forward events
+                    if let Some(tp) = point {
+                        last_touch_x = tp.x;
+                        last_touch_y = tp.y;
                     }
-                }
-                if let Some(swipe) = event {
-                    swipe_start_x = 0;
-                    if swiping {
-                        swiping = false;
-                        let ok = matches!(
-                            (&swipe.direction, swipe_dir),
-                            (SwipeDirection::Left, -1) | (SwipeDirection::Right, 1)
-                        );
-                        if ok {
-                            if swipe_dir < 0 { current_page = current_page.next(); }
-                            else { current_page = current_page.prev(); }
-                            fb.buffer_mut().copy_from_slice(&snap_target);
-                            page_dirty = true;
-                        } else {
-                            fb.buffer_mut().copy_from_slice(&snap_current);
-                            fb.flush(&mut display);
-                        }
-                    } else {
+                    if let Some(swipe) = event {
                         swipe_event = Some(swipe.direction);
                         tap_event = swipe.direction == SwipeDirection::Tap;
                     }
                 }
-            } else {
-                // In app mode: track position + forward events
-                if let Some(tp) = point {
-                    last_touch_x = tp.x;
-                    last_touch_y = tp.y;
-                }
-                if let Some(swipe) = event {
-                    swipe_event = Some(swipe.direction);
-                    tap_event = swipe.direction == SwipeDirection::Tap;
-                }
-            }
             }
         }
 
@@ -1174,67 +1099,65 @@ async fn main(_spawner: Spawner) {
         // === App state machine ===
         match app_state {
             AppState::Watchface => {
-                if !swiping {
-                    let mut need_flush = false;
-                    if page_dirty {
-                        fb.clear_color(current_page.color());
-                        match current_page {
-                            Page::Clock => { watchface.force_redraw(); }
-                            Page::System => { let _ = pages::draw_system_page(&mut fb, batt_mv, batt_pct, charging); }
-                            Page::Power => {
-                                // Rebuild stats snapshot, then render once.
-                                // Subsequent frames will only redraw every
-                                // ~1 s (see below) to keep the diagnostic
-                                // itself cheap.
-                                update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
-                                    wifi_connected, wifi_on_request, watchface.brightness,
-                                    batt_mv, batt_pct, charging);
-                                let _ = power_page::draw_power_page(&mut fb, &power_stats);
-                            }
-                            _ => {}
-                        }
-                        page_dirty = false;
-                        need_flush = true;
-                    }
+                let mut need_flush = false;
+                if page_dirty {
+                    fb.clear_color(current_page.color());
                     match current_page {
-                        Page::Clock => {
-                            // Only render if WatchFace says something is dirty.
-                            if watchface.needs_render() {
-                                let _ = watchface.render(&mut fb);
-                                need_flush = true;
-                            }
+                        Page::Clock => { watchface.force_redraw(); }
+                        Page::System => { let _ = pages::draw_system_page(&mut fb, batt_mv, batt_pct, charging); }
+                        Page::Power => {
+                            // Rebuild stats snapshot, then render once.
+                            // Subsequent frames will only redraw every
+                            // ~1 s (see below) to keep the diagnostic
+                            // itself cheap.
+                            update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
+                                wifi_connected, wifi_on_request, watchface.brightness,
+                                batt_mv, batt_pct, charging);
+                            let _ = power_page::draw_power_page(&mut fb, &power_stats);
                         }
-                        Page::Sensors => {
-                            // Sensors page is repainted at the loop tick rate (10 Hz).
-                            let ax = (accel.0 * 100.0) as i16;
-                            let ay = (accel.1 * 100.0) as i16;
-                            let az = (accel.2 * 100.0) as i16;
-                            fb.clear_color(current_page.color());
-                            let _ = pages::draw_sensors_page(&mut fb, ax, ay, az, gyro_data.0, gyro_data.1, gyro_data.2, imu_temp);
+                        _ => {}
+                    }
+                    page_dirty = false;
+                    need_flush = true;
+                }
+                match current_page {
+                    Page::Clock => {
+                        // Only render if WatchFace says something is dirty.
+                        if watchface.needs_render() {
+                            let _ = watchface.render(&mut fb);
                             need_flush = true;
                         }
-                        Page::Power => {
-                            // Refresh the snapshot + redraw at ~1 Hz. Any faster
-                            // and the diagnostic itself starts to skew the
-                            // measurement it's supposed to report.
-                            if now >= next_watchface_flush {
-                                update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
-                                    wifi_connected, wifi_on_request, watchface.brightness,
-                                    batt_mv, batt_pct, charging);
-                                let _ = power_page::draw_power_page(&mut fb, &power_stats);
-                                need_flush = true;
-                                next_watchface_flush = now + Duration::from_secs(1);
-                            }
+                    }
+                    Page::Sensors => {
+                        // Sensors page is repainted at the loop tick rate (10 Hz).
+                        let ax = (accel.0 * 100.0) as i16;
+                        let ay = (accel.1 * 100.0) as i16;
+                        let az = (accel.2 * 100.0) as i16;
+                        fb.clear_color(current_page.color());
+                        let _ = pages::draw_sensors_page(&mut fb, ax, ay, az, gyro_data.0, gyro_data.1, gyro_data.2, imu_temp);
+                        need_flush = true;
+                    }
+                    Page::Power => {
+                        // Refresh the snapshot + redraw at ~1 Hz. Any faster
+                        // and the diagnostic itself starts to skew the
+                        // measurement it's supposed to report.
+                        if now >= next_watchface_flush {
+                            update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
+                                wifi_connected, wifi_on_request, watchface.brightness,
+                                batt_mv, batt_pct, charging);
+                            let _ = power_page::draw_power_page(&mut fb, &power_stats);
+                            need_flush = true;
+                            next_watchface_flush = now + Duration::from_secs(1);
                         }
-                        Page::System => {} // Static, already rendered
                     }
-                    // Only flush if we actually drew something. The TE wait + 402 KB DMA
-                    // is by far the heaviest periodic operation in the firmware, so we
-                    // gate it strictly on dirtiness.
-                    if need_flush {
-                        fb.flush_vsync(&mut display, &te_pin);
-                        next_watchface_flush = now;
-                    }
+                    Page::System => {} // Static, already rendered
+                }
+                // Only flush if we actually drew something. The TE wait + 402 KB DMA
+                // is by far the heaviest periodic operation in the firmware, so we
+                // gate it strictly on dirtiness.
+                if need_flush {
+                    fb.flush_vsync(&mut display, &te_pin);
+                    next_watchface_flush = now;
                 }
 
                 // Tap/touch dispatch on the Clock page.

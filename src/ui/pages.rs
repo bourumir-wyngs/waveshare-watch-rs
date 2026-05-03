@@ -1,19 +1,14 @@
-// Multi-page system with swipe transitions
+// Multi-page system
 // Pages: Clock | Sensors | System Info
 
 use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use embedded_graphics::text::{Alignment, Text};
 
 use crate::board;
-use crate::drivers::co5300::DisplayError;
-
 const W: u16 = board::LCD_WIDTH;
-const H: u16 = board::LCD_HEIGHT;
-const ANIM_STEPS: u16 = 8; // Number of animation frames
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Page {
