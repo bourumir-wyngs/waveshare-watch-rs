@@ -92,6 +92,11 @@ impl<I: I2c> Ft3168Touch<I> {
         Ok(())
     }
 
+    /// Put the touch controller into hibernate mode.
+    pub fn sleep(&mut self) -> Result<(), I::Error> {
+        self.write_reg(REG_POWER_MODE, 0x03)
+    }
+
     /// Read current touch state. Returns None if no touch.
     pub fn read(&mut self) -> Result<Option<TouchPoint>, I::Error> {
         let fingers = self.read_reg(REG_FINGER_NUM)?;

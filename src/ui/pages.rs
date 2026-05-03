@@ -1,5 +1,5 @@
 // Multi-page system
-// Pages: Clock | Sensors | System Info
+// Pages: AOD | Clock | Sensors | System Info | Power
 
 use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyle;
@@ -12,27 +12,30 @@ const W: u16 = board::LCD_WIDTH;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Page {
-    Clock = 0,
-    Sensors = 1,
-    System = 2,
-    Power = 3,
+    Aod = 0,
+    Clock = 1,
+    Sensors = 2,
+    System = 3,
+    Power = 4,
 }
 
 impl Page {
-    pub fn count() -> usize { 4 }
+    pub fn count() -> usize { 5 }
 
     pub fn next(self) -> Self {
         match self {
+            Page::Aod => Page::Clock,
             Page::Clock => Page::Sensors,
             Page::Sensors => Page::System,
             Page::System => Page::Power,
-            Page::Power => Page::Clock,
+            Page::Power => Page::Aod,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Page::Clock => Page::Power,
+            Page::Aod => Page::Power,
+            Page::Clock => Page::Aod,
             Page::Sensors => Page::Clock,
             Page::System => Page::Sensors,
             Page::Power => Page::System,
@@ -46,6 +49,7 @@ impl Page {
 
     pub fn name(self) -> &'static str {
         match self {
+            Page::Aod => "AOD",
             Page::Clock => "CLOCK",
             Page::Sensors => "SENSORS",
             Page::System => "SYSTEM",

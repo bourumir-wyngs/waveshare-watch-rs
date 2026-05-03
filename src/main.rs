@@ -11,7 +11,6 @@ mod apps;
 
 use core::cell::RefCell;
 
-use embedded_graphics_core::prelude::RawData;
 use embedded_hal_bus::i2c::RefCellDevice;
 use esp_alloc as _;
 use esp_backtrace as _;
@@ -27,9 +26,8 @@ use esp_hal::dma_buffers;
 // use esp_hal::i2s::master::{I2s, Config as I2sConfig, DataFormat}; // TODO: wire I2S
 use esp_hal::gpio::{InputConfig, Level, Output, OutputConfig, Pull, Input};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
-use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::rtc_cntl::{
-    sleep::{Ext0WakeupSource, TimerWakeupSource, WakeupLevel},
+    sleep::{Ext0WakeupSource, WakeupLevel},
     Rtc as EspRtc,
 };
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
@@ -44,7 +42,7 @@ use crate::drivers::qspi_bus::QspiBus;
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
 use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
-use crate::peripherals::rtc::{Pcf85063aRtc, DateTime};
+use crate::peripherals::rtc::Pcf85063aRtc;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::ui::watchface::WatchFace;
 use crate::ui::pages::{self, Page};
@@ -62,19 +60,8 @@ use crate::apps::smarthome::SmartHomeApp;
 use crate::peripherals::audio::{Es8311, fill_beep_buffer};
 
 const AOD_BRIGHTNESS: u8 = 0xCC; // ~80%
-const DIM_AFTER_IDLE_SECS: u64 = 8;
-const AOD_AFTER_IDLE_SECS: u64 = 15;
 const AOD_DURATION_SECS: u64 = 7;
-const GESTURE_QUIET_START_HOUR: u8 = 0;
-const GESTURE_QUIET_END_HOUR: u8 = 5;
-const GESTURE_QUIET_CHECK_SECS: u64 = 60;
 const SCREEN_OFF_HOUSEKEEPING_SECS: u64 = 600;
-const GESTURE_CHECK_INTERVAL_MSECS: u64 = 1100;
-const GESTURE_TARGET_X: f32 = 0.32;
-const GESTURE_TARGET_Y: f32 = -0.04;
-const GESTURE_TARGET_Z: f32 = -0.93;
-const GESTURE_TOLERANCE: f32 = 0.4;
-const LOG_GESTURES: bool = false;
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task]
@@ -161,38 +148,6 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
         m += 1;
     }
     (y as u32, (m + 1) as u32, (remaining + 1) as u32)
-}
-
-fn gesture_aod_pose(x: f32, y: f32, z: f32) -> bool {
-    (x - GESTURE_TARGET_X).abs() <= GESTURE_TOLERANCE
-        && (y - GESTURE_TARGET_Y).abs() <= GESTURE_TOLERANCE
-        && (z - GESTURE_TARGET_Z).abs() <= GESTURE_TOLERANCE
-}
-
-fn gesture_quiet_hours(dt: &DateTime) -> bool {
-    let hour = dt.hours;
-    if GESTURE_QUIET_START_HOUR < GESTURE_QUIET_END_HOUR {
-        hour >= GESTURE_QUIET_START_HOUR && hour < GESTURE_QUIET_END_HOUR
-    } else {
-        hour >= GESTURE_QUIET_START_HOUR || hour < GESTURE_QUIET_END_HOUR
-    }
-}
-
-fn secs_until_gesture_quiet_end(dt: &DateTime) -> Option<u64> {
-    if !gesture_quiet_hours(dt) {
-        return None;
-    }
-
-    let now_secs =
-        dt.hours as u64 * 3600 + dt.minutes as u64 * 60 + dt.seconds as u64;
-    let end_secs = GESTURE_QUIET_END_HOUR as u64 * 3600;
-    let secs = if now_secs < end_secs {
-        end_secs - now_secs
-    } else {
-        24 * 3600 - now_secs + end_secs
-    };
-
-    Some(secs.max(1))
 }
 
 use embedded_graphics::pixelcolor::Rgb565;
@@ -321,232 +276,15 @@ async fn main(_spawner: Spawner) {
     fb.flush(&mut display);
     println!("[FB] OK");
 
-    // === Touch ===
-    let mut touch_rst = Output::new(peripherals.GPIO9, Level::High, OutputConfig::default());
-    // GPIO38 is the FT3168 INT line: held high by pull-up, pulled low by the controller
-    // when a finger is on the screen. We use it both for level checks and as an async wake source.
-    let mut touch_int = Input::new(peripherals.GPIO38, InputConfig::default().with_pull(Pull::Up));
-    touch_rst.set_low(); delay.delay_millis(10); touch_rst.set_high(); delay.delay_millis(50);
-    let mut touch = Ft3168Touch::new(RefCellDevice::new(&i2c_ref));
-    let _ = touch.init();
-    println!("[TOUCH] OK");
-
     // === RTC ===
     let mut rtc = Pcf85063aRtc::new(RefCellDevice::new(&i2c_ref));
     let _ = rtc.init();
     println!("[RTC] OK");
 
-    // === IMU ===
-    let mut imu = Qmi8658Imu::new(RefCellDevice::new(&i2c_ref));
-    let _ = imu.init();
-    println!("[IMU] OK");
-
-    // === SD Card (SPI3) ===
-    println!("[SD] Init...");
-    let sd_spi_config = SpiConfig::default()
-        .with_frequency(Rate::from_mhz(4))
-        .with_mode(SpiMode::_0);
-    let sd_spi = Spi::new(peripherals.SPI3, sd_spi_config)
-        .expect("SPI3 failed")
-        .with_sck(peripherals.GPIO2)
-        .with_mosi(peripherals.GPIO1)
-        .with_miso(peripherals.GPIO3);
-    let sd_cs = Output::new(peripherals.GPIO17, Level::High, OutputConfig::default());
-
-    use embedded_hal_bus::spi::ExclusiveDevice;
-    let sd_spi_dev = ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
-    let mut sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, delay);
-    let mut sd_ok = false;
-    let mut mp3_files: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
-    match sd_card.num_bytes() {
-        Ok(size) => {
-            println!("[SD] Card {}MB", size / 1024 / 1024);
-
-            // Scan /mp3/ directory
-            struct DummyTime;
-            impl embedded_sdmmc::TimeSource for DummyTime {
-                fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
-                    embedded_sdmmc::Timestamp::from_calendar(2026, 4, 6, 12, 0, 0).unwrap()
-                }
-            }
-
-            let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sd_card, DummyTime);
-            match volume_mgr.open_raw_volume(embedded_sdmmc::VolumeIdx(0)) {
-            Ok(volume) => {
-                if let Ok(root_dir) = volume_mgr.open_root_dir(volume) {
-                    if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "MP3") {
-                        println!("[SD] Found /MP3/ folder");
-                        let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
-                            if !entry.attributes.is_directory() {
-                                let name = core::str::from_utf8(&entry.name.base_name()).unwrap_or("?");
-                                let ext = core::str::from_utf8(&entry.name.extension()).unwrap_or("");
-                                let full = alloc::format!("{}.{}", name.trim(), ext.trim());
-                                println!("[SD]   {}", full);
-                                mp3_files.push(full);
-                            }
-                        });
-                        println!("[SD] {} files found", mp3_files.len());
-                        let _ = volume_mgr.close_dir(mp3_dir);
-                        sd_ok = true;
-                    } else {
-                        // Try lowercase
-                        if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "mp3") {
-                            println!("[SD] Found /mp3/ folder");
-                            let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
-                                if !entry.attributes.is_directory() {
-                                    let name = core::str::from_utf8(&entry.name.base_name()).unwrap_or("?");
-                                    let ext = core::str::from_utf8(&entry.name.extension()).unwrap_or("");
-                                    let full = alloc::format!("{}.{}", name.trim(), ext.trim());
-                                    println!("[SD]   {}", full);
-                                    mp3_files.push(full);
-                                }
-                            });
-                            println!("[SD] {} files found", mp3_files.len());
-                            let _ = volume_mgr.close_dir(mp3_dir);
-                            sd_ok = true;
-                        } else {
-                            println!("[SD] No /mp3/ or /MP3/ folder");
-                        }
-                    }
-                    let _ = volume_mgr.close_dir(root_dir);
-                } else {
-                    println!("[SD] Can't open root dir");
-                }
-            }
-            Err(e) => {
-                println!("[SD] Can't open volume: {:?}", e);
-            }
-            }
-        }
-        Err(_) => println!("[SD] No card"),
-    }
-
-    // === Audio (ES8311 codec + I2S) ===
-    // CRITICAL ORDER:
-    // 1. Keep PA amplifier DISABLED (GPIO46 LOW) - prevents white noise from floating I2S line
-    // 2. Init codec (codec init leaves DAC powered but no input yet)
-    // 3. Immediately mute the codec DAC + HP output
-    // 4. Init I2S bus
-    // Only when we actually beep: unmute codec -> raise PA_EN -> write DMA -> lower PA_EN -> mute
-    println!("[AUDIO] Init codec...");
-    let mut audio_codec = Es8311::new(RefCellDevice::new(&i2c_ref));
-    let mut pa_en = Output::new(peripherals.GPIO46, Level::Low, OutputConfig::default());
-    match audio_codec.init() {
-        Ok(()) => println!("[AUDIO] Codec OK"),
-        Err(_) => println!("[AUDIO] Codec FAILED"),
-    }
-    // Full power-down of the analog blocks (not just mute). The PGA, DAC
-    // and HP driver are explicitly cut — saves ~20 mA versus mute() which
-    // only zeroes the volume register. `unmute()` brings them back on
-    // demand at playback time.
-    let _ = audio_codec.shutdown();
-
-    // === I2S Audio Output (using public write_dma) ===
-    println!("[AUDIO] Init I2S...");
-    use esp_hal::i2s::master::{I2s, Config as I2sConfig, DataFormat};
-    use esp_hal::dma::DmaDescriptor;
-    let i2s_config = I2sConfig::default()
-        .with_sample_rate(Rate::from_hz(16000))
-        .with_data_format(DataFormat::Data16Channel16);
-    let i2s_periph = I2s::new(peripherals.I2S0, peripherals.DMA_CH1, i2s_config)
-        .expect("I2S failed")
-        .with_mclk(peripherals.GPIO16);
-    static mut I2S_TX_DESC: [DmaDescriptor; 8] = [DmaDescriptor::EMPTY; 8];
-    let mut i2s_tx = i2s_periph.i2s_tx
-        .with_bclk(peripherals.GPIO41)
-        .with_ws(peripherals.GPIO45)
-        .with_dout(peripherals.GPIO40)
-        .build(unsafe { &mut I2S_TX_DESC });
-
-    // Pre-generate beep sound (800Hz, 50ms, stereo 16-bit @ 16kHz = 3200 bytes)
-    static mut BEEP_BUF: [u8; 4000] = [0u8; 4000];
-    let beep_len = fill_beep_buffer(unsafe { &mut BEEP_BUF }, 800, 16000, 50);
-    println!("[AUDIO] I2S OK ({} bytes beep)", beep_len);
-
-    // === WiFi init (esp-radio) — RADIO STAYS OFF AT BOOT ===
-    //
-    // POWER BUDGET NOTE:
-    // Up to v0.4 the watch booted straight into a connected WiFi STA with
-    // no power-save configured. The 2.4 GHz radio + PA alone sustains
-    // ~90 mA continuous — the single biggest drain by far, roughly half
-    // of the total ~1-hour runtime the user complained about.
-    //
-    // We now keep the esp-radio stack *initialized* (so we can spin it up
-    // at any time without re-allocating 300 KB of radio buffers) but we
-    // never call `wifi_controller.start()` on boot. The user toggles the
-    // radio on/off with the 'W' button in the top-left of the watchface.
-    // When toggled on, we also immediately set PowerSave::MaxModem so the
-    // radio sleeps between DTIM beacons (~20 mA average instead of 90).
-    //
-    // DHCP + NTP are deferred to the first wake of the radio, so a watch
-    // that never toggles WiFi pays exactly zero network cost.
-    println!("[RADIO] Init radio stack (WiFi OFF, BLE OFF)");
-    static RADIO: StaticCell<esp_radio::Controller<'static>> = StaticCell::new();
-    // Coerce &'static mut → &'static so both WiFi and BLE can share the controller.
-    let radio_controller: &'static esp_radio::Controller<'static> =
-        RADIO.init(esp_radio::init().expect("esp-radio init failed"));
-
-    // === WiFi init (OFF by default) ===
-    let wifi_config = esp_radio::wifi::Config::default()
-        .with_power_save_mode(esp_radio::wifi::PowerSaveMode::Maximum);
-    let (mut wifi_controller, wifi_interfaces) = esp_radio::wifi::new(
-        radio_controller,
-        peripherals.WIFI,
-        wifi_config,
-    ).expect("WiFi init failed");
-
-    // === BLE init (OFF by default, advertising starts on user toggle) ===
-    let mut ble_connector = esp_radio::ble::controller::BleConnector::new(
-        radio_controller,
-        peripherals.BT,
-        esp_radio::ble::Config::default(),
-    ).expect("BLE init failed");
-    println!("[BLE] Connector ready (advertising OFF)");
-
-    // Pre-fill STA credentials so "toggle WiFi" just flips a bit later.
-    // Falls back to empty strings if WIFI_SSID / WIFI_PASS are not set at
-    // compile time — WiFi simply won't connect but the watch boots fine.
-    use esp_radio::wifi::{ModeConfig, ClientConfig, AuthMethod};
-    let wifi_ssid = option_env!("WIFI_SSID").unwrap_or("");
-    let wifi_pass = option_env!("WIFI_PASS").unwrap_or("");
-    let wifi_has_creds = !wifi_ssid.is_empty();
-    if !wifi_has_creds {
-        println!("[WIFI] No SSID configured — WiFi disabled");
-    }
-    let client_config = ClientConfig::default()
-        .with_ssid(alloc::string::String::from(wifi_ssid))
-        .with_password(alloc::string::String::from(wifi_pass))
-        .with_auth_method(if wifi_pass.is_empty() { AuthMethod::None } else { AuthMethod::WpaWpa2Personal });
-    let mode_config = ModeConfig::Client(client_config);
-    wifi_controller.set_config(&mode_config).expect("WiFi config failed");
-    // NOTE: we do NOT call wifi_controller.start() here. The radio stays
-    // fully idle until the user taps the WiFi button.
-
-    // === Network Stack scaffolding (idle until radio starts) ===
-    use embassy_net::{Config as NetConfig, StackResources};
-    use static_cell::StaticCell;
-
-    let net_config = NetConfig::dhcpv4(Default::default());
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-    let resources = RESOURCES.init(StackResources::new());
-
-    let (stack, runner) = embassy_net::new(wifi_interfaces.sta, net_config, resources, 12345u64);
-
-    // Spawn network runner task. It does nothing useful until the radio
-    // has been started, but spawning it here avoids having to hot-spawn
-    // a task from inside the main loop.
-    _spawner.spawn(net_task(runner)).ok();
-
-    // Keep the GPIO0 owner available so the deep-sleep path can drop this
-    // Input and hand the same pin to RTC wake as BOOT.
-    let mut boot_pin = peripherals.GPIO0;
-    let mut boot_button = Input::new(boot_pin.reborrow(), InputConfig::default().with_pull(Pull::Up));
-    println!("=== All systems GO! (Embassy async, WiFi OFF) ===");
-
     // === State ===
     let mut watchface = WatchFace::new();
     watchface.wifi_connected = false; // radio stays off until user taps the button
-    let mut current_page = Page::Clock;
+    let mut current_page = Page::Aod;
     // Live power-diagnostic snapshot, updated in the main loop and read
     // by the Power page renderer. Kept as plain POD so reading it is free.
     let mut power_stats = PowerStats::new();
@@ -561,10 +299,6 @@ async fn main(_spawner: Spawner) {
     let mut settings_app = SettingsApp::new();
     let mut mp3_player = Mp3Player::new();
     let mut smarthome_app = SmartHomeApp::new();
-    if !mp3_files.is_empty() {
-        mp3_player.set_track_count(mp3_files.len());
-        mp3_player.set_track_name(&mp3_files[0]);
-    }
     let mut last_touch_y: u16 = 0;
     let mut last_touch_x: u16 = 0;
     let mut accel = (0.0f32, 0.0f32, 0.0f32);
@@ -575,19 +309,17 @@ async fn main(_spawner: Spawner) {
     let mut charging = false;
     let mut page_dirty = true;
     let mut last_interaction = Instant::now();
-    let mut gesture_quiet_active = false;
     // screen_state levels:
     //   3 = full bright (interactive)
-    //   2 = dim (transition)
     //   1 = AOD (Always-On Display: super-dim, minimal HH:MM, 1 update / minute)
     //   0 = full off (DISPOFF + SLPIN)
-    let mut screen_state: u8 = 3;
-    let mut aod_entered_at = Instant::now();
+    let mut screen_state: u8 = 1;
+    let mut aod_entered_at: Instant;
     // Tracks the last minute we rendered in AOD so we update the screen exactly
     // once per minute, not faster. Saves both DMA bandwidth and AMOLED current.
     let mut aod_last_minute: u8 = 99;
 
-    // Initial render
+    // First visible frame: show AOD before slower optional subsystem init.
     if let Ok(pct) = power.get_battery_percent() {
         batt_pct = pct;
         batt_mv = power.get_battery_voltage().unwrap_or(0);
@@ -597,11 +329,273 @@ async fn main(_spawner: Spawner) {
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year);
-        gesture_quiet_active = gesture_quiet_hours(&dt);
+        aod_last_minute = dt.minutes;
     }
-    watchface.force_redraw();
-    let _ = watchface.render(&mut fb);
+    display.set_brightness(AOD_BRIGHTNESS);
+    let _ = watchface.render_aod(&mut fb);
     fb.flush(&mut display);
+    println!("[AOD] First frame displayed");
+
+    // === Touch ===
+    let mut touch_rst = Output::new(peripherals.GPIO9, Level::High, OutputConfig::default());
+    // GPIO38 is the FT3168 INT line: held high by pull-up, pulled low by the controller
+    // when a finger is on the screen. We use it both for level checks and as an async wake source.
+    let mut touch_int = Input::new(peripherals.GPIO38, InputConfig::default().with_pull(Pull::Up));
+    touch_rst.set_low(); delay.delay_millis(10); touch_rst.set_high(); delay.delay_millis(50);
+    let mut touch = Ft3168Touch::new(RefCellDevice::new(&i2c_ref));
+    let _ = touch.init();
+    println!("[TOUCH] OK");
+
+    // === IMU ===
+    let mut imu = Qmi8658Imu::new(RefCellDevice::new(&i2c_ref));
+    let mut imu_initialized = false;
+    println!("[IMU] Deferred");
+
+    // === Lazy SD Card (SPI3) ===
+    let mut sd_tokens = Some((
+        peripherals.SPI3,
+        peripherals.GPIO2,
+        peripherals.GPIO1,
+        peripherals.GPIO3,
+        peripherals.GPIO17,
+    ));
+    let mut sd_scanned = false;
+    let mut mp3_files: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+
+    macro_rules! ensure_mp3_scan {
+        () => {{
+            if !sd_scanned {
+                sd_scanned = true;
+                println!("[SD] Lazy init...");
+                if let Some((spi3, gpio2, gpio1, gpio3, gpio17)) = sd_tokens.take() {
+                    let sd_spi_config = SpiConfig::default()
+                        .with_frequency(Rate::from_mhz(4))
+                        .with_mode(SpiMode::_0);
+                    let sd_spi = Spi::new(spi3, sd_spi_config)
+                        .expect("SPI3 failed")
+                        .with_sck(gpio2)
+                        .with_mosi(gpio1)
+                        .with_miso(gpio3);
+                    let sd_cs = Output::new(gpio17, Level::High, OutputConfig::default());
+                    let sd_spi_dev =
+                        embedded_hal_bus::spi::ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
+                    let sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, Delay::new());
+
+                    match sd_card.num_bytes() {
+                        Ok(size) => {
+                            println!("[SD] Card {}MB", size / 1024 / 1024);
+
+                            struct DummyTime;
+                            impl embedded_sdmmc::TimeSource for DummyTime {
+                                fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
+                                    embedded_sdmmc::Timestamp::from_calendar(2026, 4, 6, 12, 0, 0)
+                                        .unwrap()
+                                }
+                            }
+
+                            let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sd_card, DummyTime);
+                            match volume_mgr.open_raw_volume(embedded_sdmmc::VolumeIdx(0)) {
+                                Ok(volume) => {
+                                    if let Ok(root_dir) = volume_mgr.open_root_dir(volume) {
+                                        if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "MP3") {
+                                            println!("[SD] Found /MP3/ folder");
+                                            let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
+                                                if !entry.attributes.is_directory() {
+                                                    let name = core::str::from_utf8(&entry.name.base_name())
+                                                        .unwrap_or("?");
+                                                    let ext = core::str::from_utf8(&entry.name.extension())
+                                                        .unwrap_or("");
+                                                    let full = alloc::format!("{}.{}", name.trim(), ext.trim());
+                                                    println!("[SD]   {}", full);
+                                                    mp3_files.push(full);
+                                                }
+                                            });
+                                            let _ = volume_mgr.close_dir(mp3_dir);
+                                        } else if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "mp3") {
+                                            println!("[SD] Found /mp3/ folder");
+                                            let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
+                                                if !entry.attributes.is_directory() {
+                                                    let name = core::str::from_utf8(&entry.name.base_name())
+                                                        .unwrap_or("?");
+                                                    let ext = core::str::from_utf8(&entry.name.extension())
+                                                        .unwrap_or("");
+                                                    let full = alloc::format!("{}.{}", name.trim(), ext.trim());
+                                                    println!("[SD]   {}", full);
+                                                    mp3_files.push(full);
+                                                }
+                                            });
+                                            let _ = volume_mgr.close_dir(mp3_dir);
+                                        } else {
+                                            println!("[SD] No /mp3/ or /MP3/ folder");
+                                        }
+                                        let _ = volume_mgr.close_dir(root_dir);
+                                    } else {
+                                        println!("[SD] Can't open root dir");
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("[SD] Can't open volume: {:?}", e);
+                                }
+                            }
+                            println!("[SD] {} files found", mp3_files.len());
+                        }
+                        Err(_) => println!("[SD] No card"),
+                    }
+                } else {
+                    println!("[SD] Scan unavailable");
+                }
+            }
+
+            mp3_player.set_track_count(mp3_files.len());
+            if !mp3_files.is_empty() {
+                mp3_player.set_track_name(&mp3_files[0]);
+            }
+        }};
+    }
+
+    // === Lazy audio (ES8311 codec + I2S) ===
+    let mut pa_en = Output::new(peripherals.GPIO46, Level::Low, OutputConfig::default());
+    let mut audio_tokens = Some((
+        peripherals.I2S0,
+        peripherals.DMA_CH1,
+        peripherals.GPIO16,
+        peripherals.GPIO41,
+        peripherals.GPIO45,
+        peripherals.GPIO40,
+    ));
+    let mut audio_codec: Option<
+        Es8311<RefCellDevice<'_, I2c<'static, esp_hal::Blocking>>>,
+    > = None;
+    let mut i2s_tx: Option<esp_hal::i2s::master::I2sTx<'static, esp_hal::Blocking>> = None;
+    let mut beep_buf: Option<&'static [u8; 4000]> = None;
+    static I2S_TX_DESC: static_cell::StaticCell<[esp_hal::dma::DmaDescriptor; 8]> =
+        static_cell::StaticCell::new();
+    static BEEP_BUF: static_cell::StaticCell<[u8; 4000]> = static_cell::StaticCell::new();
+
+    macro_rules! ensure_audio {
+        () => {{
+            if audio_codec.is_none() {
+                if let Some((i2s0, dma_ch1, gpio16, gpio41, gpio45, gpio40)) = audio_tokens.take() {
+                    println!("[AUDIO] Lazy init codec + I2S...");
+                    let mut codec = Es8311::new(RefCellDevice::new(&i2c_ref));
+                    match codec.init() {
+                        Ok(()) => println!("[AUDIO] Codec OK"),
+                        Err(_) => println!("[AUDIO] Codec FAILED"),
+                    }
+                    let _ = codec.shutdown();
+
+                    let i2s_config = esp_hal::i2s::master::Config::default()
+                        .with_sample_rate(Rate::from_hz(16000))
+                        .with_data_format(esp_hal::i2s::master::DataFormat::Data16Channel16);
+                    let i2s_periph = esp_hal::i2s::master::I2s::new(i2s0, dma_ch1, i2s_config)
+                        .expect("I2S failed")
+                        .with_mclk(gpio16);
+                    let tx = i2s_periph.i2s_tx
+                        .with_bclk(gpio41)
+                        .with_ws(gpio45)
+                        .with_dout(gpio40)
+                        .build(I2S_TX_DESC.init([esp_hal::dma::DmaDescriptor::EMPTY; 8]));
+
+                    let buf = BEEP_BUF.init([0u8; 4000]);
+                    let beep_len = fill_beep_buffer(buf, 800, 16000, 50);
+                    println!("[AUDIO] I2S OK ({} bytes beep)", beep_len);
+                    audio_codec = Some(codec);
+                    i2s_tx = Some(tx);
+                    beep_buf = Some(buf);
+                } else {
+                    println!("[AUDIO] Init unavailable");
+                }
+            }
+
+            audio_codec.is_some() && i2s_tx.is_some()
+        }};
+    }
+
+    // === Lazy radio/network ===
+    let mut radio_tokens = Some((peripherals.WIFI, peripherals.BT));
+    let mut wifi_controller: Option<esp_radio::wifi::WifiController<'static>> = None;
+    let mut stack: Option<embassy_net::Stack<'static>> = None;
+    let mut ble_connector: Option<esp_radio::ble::controller::BleConnector<'static>> = None;
+    static RADIO: static_cell::StaticCell<esp_radio::Controller<'static>> =
+        static_cell::StaticCell::new();
+    static RESOURCES: static_cell::StaticCell<embassy_net::StackResources<3>> =
+        static_cell::StaticCell::new();
+
+    // Pre-fill STA credentials so "toggle WiFi" just flips a bit later.
+    // Falls back to empty strings if WIFI_SSID / WIFI_PASS are not set at
+    // compile time — WiFi simply won't connect but the watch boots fine.
+    use esp_radio::wifi::{ModeConfig, ClientConfig, AuthMethod};
+    let wifi_ssid = option_env!("WIFI_SSID").unwrap_or("");
+    let wifi_pass = option_env!("WIFI_PASS").unwrap_or("");
+    let wifi_has_creds = !wifi_ssid.is_empty();
+    if !wifi_has_creds {
+        println!("[WIFI] No SSID configured — WiFi disabled");
+    }
+
+    macro_rules! ensure_radio {
+        () => {{
+            if wifi_controller.is_none() {
+                if let Some((wifi_periph, bt_periph)) = radio_tokens.take() {
+                    println!("[RADIO] Lazy init radio stack...");
+                    let radio_controller: &'static esp_radio::Controller<'static> =
+                        RADIO.init(esp_radio::init().expect("esp-radio init failed"));
+
+                    let wifi_config = esp_radio::wifi::Config::default()
+                        .with_power_save_mode(esp_radio::wifi::PowerSaveMode::Maximum);
+                    let (mut new_wifi_controller, wifi_interfaces) = esp_radio::wifi::new(
+                        radio_controller,
+                        wifi_periph,
+                        wifi_config,
+                    ).expect("WiFi init failed");
+
+                    let client_config = ClientConfig::default()
+                        .with_ssid(alloc::string::String::from(wifi_ssid))
+                        .with_password(alloc::string::String::from(wifi_pass))
+                        .with_auth_method(if wifi_pass.is_empty() {
+                            AuthMethod::None
+                        } else {
+                            AuthMethod::WpaWpa2Personal
+                        });
+                    let mode_config = ModeConfig::Client(client_config);
+                    new_wifi_controller.set_config(&mode_config).expect("WiFi config failed");
+
+                    let new_ble_connector = esp_radio::ble::controller::BleConnector::new(
+                        radio_controller,
+                        bt_periph,
+                        esp_radio::ble::Config::default(),
+                    ).expect("BLE init failed");
+
+                    let resources = RESOURCES.init(embassy_net::StackResources::new());
+                    let net_config = embassy_net::Config::dhcpv4(Default::default());
+                    let (new_stack, runner) =
+                        embassy_net::new(wifi_interfaces.sta, net_config, resources, 12345u64);
+                    _spawner.spawn(net_task(runner)).ok();
+
+                    wifi_controller = Some(new_wifi_controller);
+                    stack = Some(new_stack);
+                    ble_connector = Some(new_ble_connector);
+                    println!("[RADIO] Ready (WiFi OFF, BLE OFF)");
+                } else {
+                    println!("[RADIO] Init unavailable");
+                }
+            }
+
+            wifi_controller.is_some()
+        }};
+    }
+
+    // Keep the GPIO0 owner available so the deep-sleep path can drop this
+    // Input and hand the same pin to RTC wake as BOOT.
+    let mut boot_pin = peripherals.GPIO0;
+    let mut boot_button = Input::new(boot_pin.reborrow(), InputConfig::default().with_pull(Pull::Up));
+    // If this boot was caused by the BOOT button, the pin may still be held low.
+    // Do not treat it as a new sleep request until it has been released once.
+    let mut boot_button_armed = !boot_button.is_low();
+    println!("=== All systems GO! (Embassy async, WiFi OFF) ===");
+
+    // Give the user a full interactive AOD window after the slower init
+    // that now happens behind the already-visible first AOD frame.
+    aod_entered_at = Instant::now();
 
     // === Event-driven async main loop ===
     //
@@ -627,11 +621,9 @@ async fn main(_spawner: Spawner) {
     use embassy_futures::select::select3;
 
     let mut next_rtc = Instant::now();
-    let mut next_gesture_quiet_check = Instant::now();
     let mut next_battery = Instant::now();
     let mut last_frame = Instant::now();
     let mut next_watchface_flush = Instant::now();
-    let mut next_gesture_accel_log = Instant::now();
     // Radio state: we track both what the user *wants* and what the radio
     // actually is. They drift apart briefly during connect/disconnect.
     let mut wifi_on_request: bool = false;      // user toggle
@@ -646,7 +638,7 @@ async fn main(_spawner: Spawner) {
     let mut ble_toggle_request: bool = false;
     // Power-down the IMU at boot — only enable when a consumer (gyro toggle, game, sensors page) needs it.
     let _ = imu.power_down();
-    // IMU mode: 0 = off, 1 = accel only, 2 = accel + gyro.
+    // IMU mode: 0 = off, 2 = accel + gyro.
     let mut imu_mode: u8 = 0;
     // Tracks the previous-iteration state of the FT3168 INT line.
     // We need this to keep polling touch.poll() ONCE more after the finger lifts,
@@ -665,19 +657,14 @@ async fn main(_spawner: Spawner) {
             Duration::from_millis(16) // ~60 Hz
         } else if screen_state == 0 {
             // Screen completely off: normally only wake every 10 min for housekeeping.
-            // Gesture diagnostics need a 1 Hz tick so accel reads continue while off.
-            if watchface.gesture_enabled && !gesture_quiet_active {
-                Duration::from_millis(GESTURE_CHECK_INTERVAL_MSECS)
-            } else {
-                Duration::from_secs(SCREEN_OFF_HOUSEKEEPING_SECS)
-            }
+            Duration::from_secs(SCREEN_OFF_HOUSEKEEPING_SECS)
         } else if screen_state == 1 {
-            // AOD mode: wake every 10 s to check if a new minute has started.
-            // We don't need exactly 60 s precision because the user only sees minutes change.
-            Duration::from_secs(10)
+            // AOD mode: wake occasionally to check the off timeout or minute change.
+            Duration::from_secs(AOD_DURATION_SECS.min(10))
         } else {
             match app_state {
                 AppState::Watchface => match current_page {
+                    Page::Aod => Duration::from_secs(AOD_DURATION_SECS.min(10)),
                     // Clock page: 1 Hz when gyro is off (only seconds change),
                     // 33 ms when gyro is on (smooth ball animation).
                     Page::Clock => if watchface.gyro_enabled {
@@ -718,107 +705,105 @@ async fn main(_spawner: Spawner) {
         let dt_ms = (now - last_frame).as_millis() as u32;
         last_frame = now;
 
+        let button_pressed = boot_button.is_low();
+        let mut low_power_reason: Option<&'static str> = None;
+        if button_pressed {
+            if boot_button_armed {
+                low_power_reason = Some("BOOT button");
+            }
+        } else {
+            boot_button_armed = true;
+        }
+
+        if low_power_reason.is_none()
+            && current_page == Page::Aod
+            && screen_state == 1
+            && (now - aod_entered_at).as_secs() >= AOD_DURATION_SECS {
+            low_power_reason = Some("AOD timeout");
+        }
+
+        if let Some(reason) = low_power_reason {
+            println!("[POWER] Entering low power mode ({})", reason);
+
+            if wifi_connected {
+                if let Some(controller) = wifi_controller.as_mut() {
+                    let _ = embassy_time::with_timeout(
+                        Duration::from_secs(1),
+                        controller.disconnect_async(),
+                    ).await;
+                }
+            }
+            if wifi_started {
+                if let Some(controller) = wifi_controller.as_mut() {
+                    let _ = controller.stop();
+                }
+            }
+            if ble_on {
+                if let Some(connector) = ble_connector.as_mut() {
+                    let _ = crate::peripherals::ble::stop_advertising(connector);
+                }
+            }
+
+            pa_en.set_low();
+            if let Some(codec) = audio_codec.as_mut() {
+                let _ = codec.shutdown();
+            }
+            if imu_initialized {
+                let _ = imu.power_down();
+            }
+            let _ = touch.sleep();
+            touch_rst.set_low();
+            display.set_brightness(0x00);
+            display.display_off();
+            println!("[POWER] Deep sleep armed; wake source: BOOT/GPIO0 low");
+            Timer::after(Duration::from_millis(50)).await;
+
+            drop(boot_button);
+            let boot_wake = Ext0WakeupSource::new(boot_pin, WakeupLevel::Low);
+            esp_rtc.sleep_deep(&[&boot_wake]);
+        }
+
         // === Sensors (gated by need + screen state) ===
         // IMU only when an interactive consumer needs it (gyro enabled, IMU-driven game, sensors page).
         // When screen is off OR no consumer needs it, we power-down the IMU completely
         // (CTRL7 = 0). The QMI8658's gyro alone draws ~1.5 mA so this is a meaningful win.
-        let need_motion_imu = screen_state >= 2
+        let need_motion_imu = screen_state == 3
             && (watchface.gyro_enabled
                 || app_state == AppState::Maze
                 || app_state == AppState::Tetris
                 || app_state == AppState::Flappy
                 || (app_state == AppState::Watchface && current_page == Page::Sensors));
-        let need_gesture_accel = watchface.gesture_enabled && screen_state == 0 && !gesture_quiet_active;
-        let target_imu_mode = if need_motion_imu {
-            2
-        } else if need_gesture_accel {
-            1
-        } else {
-            0
-        };
+        if need_motion_imu && !imu_initialized {
+            match imu.init() {
+                Ok(true) => {
+                    imu_initialized = true;
+                    println!("[IMU] Lazy init OK");
+                }
+                Ok(false) => println!("[IMU] Lazy init: chip ID mismatch"),
+                Err(_) => println!("[IMU] Lazy init failed"),
+            }
+        }
+        let target_imu_mode = if need_motion_imu && imu_initialized { 2 } else { 0 };
         if target_imu_mode != imu_mode {
             match target_imu_mode {
-                2 => { let _ = imu.power_up(); }
-                1 => { let _ = imu.power_up_accel(); }
-                _ => { let _ = imu.power_down(); }
+                2 if imu_initialized => { let _ = imu.power_up(); }
+                _ if imu_initialized => { let _ = imu.power_down(); }
+                _ => {}
             }
             imu_mode = target_imu_mode;
         }
-        if need_motion_imu || need_gesture_accel {
+        if need_motion_imu && imu_initialized {
             if let Ok(a) = imu.read_accel() {
                 accel = (a.x, a.y, a.z);
-                let gesture_pose_match = need_gesture_accel && gesture_aod_pose(a.x, a.y, a.z);
-                if need_motion_imu {
-                    watchface.update_accel(a.x, a.y, a.z);
-                }
-                if LOG_GESTURES && need_gesture_accel && now >= next_gesture_accel_log {
-                    println!(
-                        "[GESTURE] accel x={:.2}g y={:.2}g z={:.2}g {}",
-                        a.x,
-                        a.y,
-                        a.z,
-                        if gesture_pose_match { "ON" } else { "OFF" },
-                    );
-                    next_gesture_accel_log = now + Duration::from_secs(1);
-                }
-                if gesture_pose_match {
-                    if screen_state == 0 {
-                        println!("[GESTURE] AOD pose detected; waking display to AOD");
-                        display.display_on();
-                        Timer::after(Duration::from_millis(20)).await;
-                        display.set_brightness(AOD_BRIGHTNESS);
-                        screen_state = 1;
-                        aod_entered_at = now;
-                        aod_last_minute = 99;
-                    }
-                }
+                watchface.update_accel(a.x, a.y, a.z);
             }
         }
-        if need_motion_imu {
+        if need_motion_imu && imu_initialized {
             if let Ok(g) = imu.read_gyro() {
                 gyro_data = ((g.x * 10.0) as i16, (g.y * 10.0) as i16, (g.z * 10.0) as i16);
             }
             if let Ok(t) = imu.read_temperature() {
                 imu_temp = (t * 10.0) as i16;
-            }
-        }
-
-        // Keep the gesture quiet-hours gate current even when the display is off.
-        // Gesture wake is disabled from 00:00 through 04:59, but touch/button
-        // wake still works because those are handled by GPIO interrupts above.
-        if now >= next_gesture_quiet_check {
-            if let Ok(dt) = rtc.get_time() {
-                gesture_quiet_active = gesture_quiet_hours(&dt);
-            }
-            next_gesture_quiet_check = now + Duration::from_secs(GESTURE_QUIET_CHECK_SECS);
-        }
-
-        // Night sleep: once the panel is fully off, the housekeeping RTC read is
-        // enough to decide whether to stop the ESP32-S3 completely until 05:00.
-        // BOOT/GPIO0 is configured as an early wake source; touch is not RTC-wake
-        // capable on this board.
-        if screen_state == 0 && gesture_quiet_active {
-            if let Ok(dt) = rtc.get_time() {
-                if let Some(sleep_secs) = secs_until_gesture_quiet_end(&dt) {
-                    println!(
-                        "[SLEEP] deep sleep {:02}:{:02}:{:02} -> {:02}:00 ({}s), BOOT wake enabled",
-                        dt.hours,
-                        dt.minutes,
-                        dt.seconds,
-                        GESTURE_QUIET_END_HOUR,
-                        sleep_secs,
-                    );
-                    display.set_brightness(0x00);
-                    display.display_off();
-                    let _ = imu.power_down();
-                    Timer::after(Duration::from_millis(50)).await;
-
-                    drop(boot_button);
-                    let timer_wake =
-                        TimerWakeupSource::new(core::time::Duration::from_secs(sleep_secs));
-                    let boot_wake = Ext0WakeupSource::new(boot_pin, WakeupLevel::Low);
-                    esp_rtc.sleep_deep(&[&timer_wake, &boot_wake]);
-                }
             }
         }
 
@@ -828,7 +813,6 @@ async fn main(_spawner: Spawner) {
             if let Ok(dt) = rtc.get_time() {
                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                 watchface.update_date(dt.day, dt.month, dt.year);
-                gesture_quiet_active = gesture_quiet_hours(&dt);
             }
             next_rtc = now + Duration::from_secs(1);
         }
@@ -860,8 +844,8 @@ async fn main(_spawner: Spawner) {
         let mut swipe_event = None;
         let mut tap_event = false;
         let int_low = touch_int.is_low();
-        // Touch I2C is only polled in fully-interactive states (AOD has no touch handling).
-        let touch_active = screen_state >= 2 && (int_low || was_touching);
+        // AOD is also swipeable, so poll touch whenever the display is not fully off.
+        let touch_active = screen_state != 0 && (int_low || was_touching);
         was_touching = int_low;
         if touch_active {
             if let Ok((point, event)) = touch.poll() {
@@ -880,11 +864,29 @@ async fn main(_spawner: Spawner) {
                         match swipe.direction {
                             SwipeDirection::Left if !on_slider => {
                                 current_page = current_page.next();
+                                if current_page == Page::Aod {
+                                    display.set_brightness(AOD_BRIGHTNESS);
+                                    screen_state = 1;
+                                    aod_entered_at = now;
+                                    aod_last_minute = 99;
+                                } else if screen_state < 3 {
+                                    display.set_brightness(watchface.brightness);
+                                    screen_state = 3;
+                                }
                                 page_dirty = true;
                                 next_watchface_flush = now;
                             }
                             SwipeDirection::Right if !on_slider => {
                                 current_page = current_page.prev();
+                                if current_page == Page::Aod {
+                                    display.set_brightness(AOD_BRIGHTNESS);
+                                    screen_state = 1;
+                                    aod_entered_at = now;
+                                    aod_last_minute = 99;
+                                } else if screen_state < 3 {
+                                    display.set_brightness(watchface.brightness);
+                                    screen_state = 3;
+                                }
                                 page_dirty = true;
                                 next_watchface_flush = now;
                             }
@@ -910,23 +912,39 @@ async fn main(_spawner: Spawner) {
 
         // === Screen sleep/wake state machine ===
         // Levels:
-        //   3 = full bright + interactive (default)
-        //   2 = dim brightness, still interactive
-        //   1 = AOD: minimal HH:MM, 80% brightness, 1 update/min, no touch I/O
-        //   0 = full off (DISPOFF + SLPIN), only GPIO interrupts can wake
+        //   3 = full bright + interactive
+        //   1 = AOD: minimal HH:MM, 80% brightness, 1 update/min, swipeable
+        //   0 = full off (normally followed by ESP deep sleep)
         //
-        // Transitions on idle: 3 -> 8s -> 2 -> 15s -> 1 (AOD) -> 30s in AOD -> 0 (off)
-        // Any touch/button bumps us straight back to 3.
+        // AOD timeout enters deep sleep earlier in the loop. Touch wakes only
+        // while the display is still on; BOOT is reserved for low-power entry.
         let any_touch = touch_int.is_low();
-        if any_touch || swipe_event.is_some() || tap_event || boot_button.is_low() {
+        let aod_swipeable = app_state == AppState::Watchface
+            && current_page == Page::Aod
+            && screen_state == 1;
+        if any_touch || swipe_event.is_some() || tap_event {
             last_interaction = now;
-            if screen_state < 3 {
-                // Wake up to full bright. If we were fully off (state 0), re-init the panel.
-                if screen_state == 0 {
-                    display.display_on();
-                    Timer::after(Duration::from_millis(20)).await;
+            if screen_state == 0 {
+                // Wake the panel. If the selected page is AOD, keep it in AOD brightness;
+                // swiping away from it promotes the display to interactive brightness.
+                display.display_on();
+                Timer::after(Duration::from_millis(20)).await;
+                if app_state == AppState::Watchface && current_page == Page::Aod {
+                    display.set_brightness(AOD_BRIGHTNESS);
+                    screen_state = 1;
+                    aod_entered_at = now;
+                    aod_last_minute = 99;
+                } else {
+                    display.set_brightness(watchface.brightness);
+                    screen_state = 3;
                 }
-                // Restore the user's chosen brightness from the slider.
+                next_watchface_flush = now;
+                if app_state == AppState::Watchface {
+                    watchface.force_redraw();
+                    page_dirty = true;
+                }
+            } else if screen_state < 3 && !aod_swipeable {
+                // Wake up to full bright.
                 display.set_brightness(watchface.brightness);
                 screen_state = 3;
                 next_watchface_flush = now;
@@ -937,31 +955,6 @@ async fn main(_spawner: Spawner) {
             }
         }
         let idle_secs = (now - last_interaction).as_secs();
-        let aod_secs = if screen_state == 1 {
-            (now - aod_entered_at).as_secs()
-        } else {
-            0
-        };
-        if screen_state == 1 && aod_secs >= AOD_DURATION_SECS {
-            display.set_brightness(0x00);
-            display.display_off();
-            screen_state = 0;
-        } else if idle_secs >= AOD_AFTER_IDLE_SECS && screen_state > 1 {
-            if app_state == AppState::Watchface && current_page == Page::Clock {
-                display.set_brightness(AOD_BRIGHTNESS);
-                screen_state = 1;
-                aod_entered_at = now;
-                aod_last_minute = 99; // force first AOD frame
-            } else {
-                // Not on the clock face → no AOD, just go straight to off
-                display.set_brightness(0x00);
-                display.display_off();
-                screen_state = 0;
-            }
-        } else if idle_secs >= DIM_AFTER_IDLE_SECS && screen_state > 2 {
-            display.set_brightness(0x40);
-            screen_state = 2;
-        }
 
         // === WiFi on/off state machine ===
         //
@@ -986,56 +979,69 @@ async fn main(_spawner: Spawner) {
         }
 
         if wifi_on_request && !wifi_connected {
-            if !wifi_started {
-                if wifi_controller.start().is_ok() {
-                    wifi_started = true;
-                }
-            }
-            if wifi_started {
-                // 8 s timeout — avoids blocking the UI forever if AP
-                // is unreachable or credentials are wrong.
-                match embassy_time::with_timeout(
-                    Duration::from_secs(8),
-                    wifi_controller.connect_async(),
-                ).await {
-                    Ok(Ok(())) => {
-                        println!("[WIFI] Connected (PS=MaxModem)");
-                        wifi_connected = true;
-                        watchface.wifi_connected = true;
-                        watchface.force_redraw();
-                        page_dirty = true;
-                        // NTP sync only once per boot, after DHCP lands.
-                        if !ntp_synced {
-                            for _ in 0..30 {
-                                if stack.config_v4().is_some() { break; }
-                                Timer::after(Duration::from_millis(100)).await;
-                            }
-                            if stack.config_v4().is_some() {
-                                if ntp_sync(stack, &mut rtc).await.is_ok() {
-                                    ntp_synced = true;
-                                    println!("[NTP] synced");
+            if ensure_radio!() {
+                if let Some(controller) = wifi_controller.as_mut() {
+                    if !wifi_started {
+                        if controller.start().is_ok() {
+                            wifi_started = true;
+                        }
+                    }
+                    if wifi_started {
+                        // 8 s timeout — avoids blocking the UI forever if AP
+                        // is unreachable or credentials are wrong.
+                        match embassy_time::with_timeout(
+                            Duration::from_secs(8),
+                            controller.connect_async(),
+                        ).await {
+                            Ok(Ok(())) => {
+                                println!("[WIFI] Connected (PS=MaxModem)");
+                                wifi_connected = true;
+                                watchface.wifi_connected = true;
+                                watchface.force_redraw();
+                                page_dirty = true;
+                                // NTP sync only once per boot, after DHCP lands.
+                                if !ntp_synced {
+                                    if let Some(stack) = stack {
+                                        for _ in 0..30 {
+                                            if stack.config_v4().is_some() { break; }
+                                            Timer::after(Duration::from_millis(100)).await;
+                                        }
+                                        if stack.config_v4().is_some() {
+                                            if ntp_sync(stack, &mut rtc).await.is_ok() {
+                                                ntp_synced = true;
+                                                println!("[NTP] synced");
+                                            }
+                                        }
+                                    }
                                 }
+                            }
+                            _ => {
+                                // Timeout or error — back off instead of hammering.
+                                println!("[WIFI] Connect failed/timeout");
+                                wifi_on_request = false;
+                                watchface.wifi_connected = false;
+                                watchface.force_redraw();
+                                page_dirty = true;
                             }
                         }
                     }
-                    _ => {
-                        // Timeout or error — back off instead of hammering.
-                        println!("[WIFI] Connect failed/timeout");
-                        wifi_on_request = false;
-                        watchface.wifi_connected = false;
-                        watchface.force_redraw();
-                        page_dirty = true;
-                    }
                 }
+            } else {
+                wifi_on_request = false;
+                watchface.wifi_connected = false;
+                watchface.force_redraw();
+                page_dirty = true;
             }
             last_wifi_idle_check = now;
         }
         if !wifi_on_request && wifi_connected {
-            let _ = wifi_controller.disconnect_async().await;
+            if let Some(controller) = wifi_controller.as_mut() {
+                let _ = controller.disconnect_async().await;
+                let _ = controller.stop();
+            }
             println!("[WIFI] Disconnected");
             wifi_connected = false;
             watchface.wifi_connected = false;
-            let _ = wifi_controller.stop();
             wifi_started = false;
             watchface.force_redraw();
             page_dirty = true;
@@ -1053,15 +1059,26 @@ async fn main(_spawner: Spawner) {
             ble_toggle_request = false;
             ble_on = !ble_on;
             if ble_on {
-                match crate::peripherals::ble::start_advertising(&mut ble_connector) {
-                    Ok(()) => println!("[BLE] Advertising started"),
-                    Err(_) => {
-                        println!("[BLE] Failed to start advertising");
+                if ensure_radio!() {
+                    if let Some(connector) = ble_connector.as_mut() {
+                        match crate::peripherals::ble::start_advertising(connector) {
+                            Ok(()) => println!("[BLE] Advertising started"),
+                            Err(_) => {
+                                println!("[BLE] Failed to start advertising");
+                                ble_on = false;
+                            }
+                        }
+                    } else {
+                        println!("[BLE] Connector unavailable");
                         ble_on = false;
                     }
+                } else {
+                    ble_on = false;
                 }
             } else {
-                let _ = crate::peripherals::ble::stop_advertising(&mut ble_connector);
+                if let Some(connector) = ble_connector.as_mut() {
+                    let _ = crate::peripherals::ble::stop_advertising(connector);
+                }
                 println!("[BLE] Advertising stopped");
             }
             watchface.ble_on = ble_on;
@@ -1074,7 +1091,7 @@ async fn main(_spawner: Spawner) {
         // In AOD we render *only* when the minute changes. Reads RTC, draws minimal
         // black-background HH:MM into the framebuffer, flushes once. Total work per minute:
         // ~1 RTC read + ~1 framebuffer fill + 1 DMA flush. The CPU sleeps the rest of the time.
-        if screen_state == 1 {
+        if current_page == Page::Aod && screen_state == 1 {
             if let Ok(dt) = rtc.get_time() {
                 if dt.minutes != aod_last_minute {
                     aod_last_minute = dt.minutes;
@@ -1103,6 +1120,7 @@ async fn main(_spawner: Spawner) {
                 if page_dirty {
                     fb.clear_color(current_page.color());
                     match current_page {
+                        Page::Aod => { aod_last_minute = 99; }
                         Page::Clock => { watchface.force_redraw(); }
                         Page::System => { let _ = pages::draw_system_page(&mut fb, batt_mv, batt_pct, charging); }
                         Page::Power => {
@@ -1121,6 +1139,19 @@ async fn main(_spawner: Spawner) {
                     need_flush = true;
                 }
                 match current_page {
+                    Page::Aod => {
+                        if let Ok(dt) = rtc.get_time() {
+                            if dt.minutes != aod_last_minute {
+                                aod_last_minute = dt.minutes;
+                                watchface.update_time(dt.hours, dt.minutes, dt.seconds);
+                                if let Ok(pct) = power.get_battery_percent() {
+                                    watchface.update_battery(pct, batt_mv, charging);
+                                }
+                                let _ = watchface.render_aod(&mut fb);
+                                need_flush = true;
+                            }
+                        }
+                    }
                     Page::Clock => {
                         // Only render if WatchFace says something is dirty.
                         if watchface.needs_render() {
@@ -1182,12 +1213,6 @@ async fn main(_spawner: Spawner) {
                             wifi_toggle_request = true;
                             watchface.force_redraw();
                             page_dirty = true;
-                        // Gesture toggle: enables low-rate accelerometer diagnostics.
-                        } else if WatchFace::is_gesture_zone(last_touch_x, last_touch_y) {
-                            watchface.gesture_enabled = !watchface.gesture_enabled;
-                            println!("Gesture: {}", if watchface.gesture_enabled { "ON" } else { "OFF" });
-                            watchface.force_redraw();
-                            page_dirty = true;
                         // CPU frequency cycle (live DVFS)
                         } else if WatchFace::is_cpu_zone(last_touch_x, last_touch_y) {
                             watchface.cycle_cpu();
@@ -1216,15 +1241,11 @@ async fn main(_spawner: Spawner) {
                     }
                 }
 
-                // Swipe up on Clock → launcher, boot button too
+                // Swipe up on Clock → launcher
                 if let Some(SwipeDirection::Up) = swipe_event {
                     if current_page == Page::Clock {
                         app_state = AppState::Launcher;
                     }
-                }
-                if boot_button.is_low() {
-                    app_state = AppState::Launcher;
-                    Timer::after(Duration::from_millis(200)).await;
                 }
             }
 
@@ -1244,16 +1265,21 @@ async fn main(_spawner: Spawner) {
                             fb.flush(&mut display);
                             // Beep when food eaten via I2S DMA
                             if snake_game.score() > prev_score {
-                                // Unmute codec, then raise PA amplifier, then play
-                                let _ = audio_codec.unmute();
-                                delay.delay_millis(2); // let codec stabilize before enabling amp
-                                pa_en.set_high();
-                                if let Ok(transfer) = i2s_tx.write_dma(unsafe { &BEEP_BUF }) {
-                                    let _ = transfer.wait();
+                                if ensure_audio!() {
+                                    if let (Some(codec), Some(tx), Some(buf)) =
+                                        (audio_codec.as_mut(), i2s_tx.as_mut(), beep_buf) {
+                                        // Unmute codec, then raise PA amplifier, then play
+                                        let _ = codec.unmute();
+                                        delay.delay_millis(2); // let codec stabilize before enabling amp
+                                        pa_en.set_high();
+                                        if let Ok(transfer) = tx.write_dma(buf) {
+                                            let _ = transfer.wait();
+                                        }
+                                        // Lower amp FIRST, then mute codec to avoid pop
+                                        pa_en.set_low();
+                                        let _ = codec.mute();
+                                    }
                                 }
-                                // Lower amp FIRST, then mute codec to avoid pop
-                                pa_en.set_low();
-                                let _ = audio_codec.mute();
                             }
                         }
                     }
@@ -1264,12 +1290,6 @@ async fn main(_spawner: Spawner) {
                     }
                 }
 
-                if boot_button.is_low() {
-                    app_state = AppState::Watchface;
-                    watchface.force_redraw();
-                    page_dirty = true;
-                    Timer::after(Duration::from_millis(200)).await;
-                }
             }
 
             AppState::Launcher => {
@@ -1285,7 +1305,14 @@ async fn main(_spawner: Spawner) {
                         AppState::Tetris => tetris_game.setup(),
                         AppState::Flappy => flappy_game.setup(),
                         AppState::Maze => maze_game.setup(),
-                        AppState::Mp3Player => mp3_player.setup(),
+                        AppState::Mp3Player => {
+                            ensure_mp3_scan!();
+                            mp3_player.setup();
+                            mp3_player.set_track_count(mp3_files.len());
+                            if !mp3_files.is_empty() {
+                                mp3_player.set_track_name(&mp3_files[0]);
+                            }
+                        }
                         AppState::SmartHome => smarthome_app.setup(),
                         AppState::Settings => {}
                         AppState::Watchface => { watchface.force_redraw(); page_dirty = true; }
@@ -1294,12 +1321,6 @@ async fn main(_spawner: Spawner) {
                 } else {
                     launcher.render(&mut fb);
                     fb.flush(&mut display);
-                }
-                if boot_button.is_low() {
-                    app_state = AppState::Watchface;
-                    watchface.force_redraw();
-                    page_dirty = true;
-                    Timer::after(Duration::from_millis(200)).await;
                 }
             }
 
@@ -1311,7 +1332,6 @@ async fn main(_spawner: Spawner) {
                     game_2048.render(&mut fb);
                     fb.flush_vsync(&mut display, &te_pin);
                 }
-                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
             }
 
             AppState::Tetris => {
@@ -1321,7 +1341,6 @@ async fn main(_spawner: Spawner) {
                     tetris_game.render(&mut fb);
                     fb.flush_vsync(&mut display, &te_pin);
                 }
-                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
             }
 
             AppState::Flappy => {
@@ -1336,11 +1355,6 @@ async fn main(_spawner: Spawner) {
                     fb.swap_and_flush(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(33);
                 }
-                if boot_button.is_low() {
-                    app_state = AppState::Launcher;
-                    page_dirty = true;
-                    Timer::after(Duration::from_millis(200)).await;
-                }
             }
 
             AppState::Maze => {
@@ -1352,7 +1366,6 @@ async fn main(_spawner: Spawner) {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(33);
                 }
-                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
             }
 
             AppState::SmartHome => {
@@ -1365,7 +1378,6 @@ async fn main(_spawner: Spawner) {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(100);
                 }
-                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
             }
 
             AppState::Mp3Player => {
@@ -1376,7 +1388,6 @@ async fn main(_spawner: Spawner) {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(200);
                 }
-                if boot_button.is_low() { app_state = AppState::Launcher; Timer::after(Duration::from_millis(200)).await; }
             }
 
             AppState::Settings => {
@@ -1395,15 +1406,8 @@ async fn main(_spawner: Spawner) {
                     fb.flush_vsync(&mut display, &te_pin);
                     next_watchface_flush = now + Duration::from_millis(50);
                 }
-                if boot_button.is_low() {
-                    app_state = AppState::Launcher;
-                    Timer::after(Duration::from_millis(200)).await;
-                }
             }
 
-            _ => {
-                app_state = AppState::Watchface;
-            }
         }
     }
 }
