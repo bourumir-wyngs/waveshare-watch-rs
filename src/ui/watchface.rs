@@ -8,6 +8,7 @@ use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRe
 use embedded_graphics::text::{Alignment, Text};
 
 use crate::board;
+use crate::ui::aod_logo;
 use crate::ui::segments;
 
 const SCREEN_CX: i32 = board::LCD_WIDTH as i32 / 2;
@@ -486,9 +487,10 @@ impl WatchFace {
     /// Always-On-Display renderer.
     /// Strategy:
     ///   * Pure black background → on AMOLED these pixels are physically OFF (zero current).
+    ///   * Ferris logo above the time, shifted with the clock to reduce burn-in.
     ///   * Only HH:MM is drawn (no seconds), in dim white using the same 7-segment font.
     ///   * Tiny battery percentage in the corner.
-    ///   * Vertical position is shifted by `(minutes % 8) - 4` pixels to avoid pixel
+    ///   * Position is shifted by `(minutes % 9) - 4` pixels to avoid pixel
     ///     burn-in over months of always-on use, mimicking what Apple Watch does.
     pub fn render_aod<D: DrawTarget<Color = Rgb565>>(&mut self, d: &mut D) -> Result<(), D::Error> {
         let w = board::LCD_WIDTH as i32;
@@ -509,6 +511,12 @@ impl WatchFace {
         // HH:MM only (no seconds, no extra widgets).
         // About 80% white. The panel brightness is also set to ~80% when AOD is active.
         let dim_white = Rgb565::new(25, 50, 25);
+
+        // Keep the logo tied to the same anti burn-in offset as the time block.
+        aod_logo::draw(
+            d,
+            Point::new(cx - aod_logo::WIDTH / 2, cy - aod_logo::HEIGHT - 40),
+        )?;
 
         // Draw HH:MM using the segment renderer. Pass 99 for seconds to indicate "skip seconds".
         // The segments::draw_time function draws all 8 chars; we'll use a custom call.
