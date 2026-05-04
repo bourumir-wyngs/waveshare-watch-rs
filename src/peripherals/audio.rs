@@ -23,7 +23,7 @@ impl<I: I2c> Es8311<I> {
         Ok(buf[0])
     }
 
-    /// Initialize ES8311 for 16kHz 16-bit I2S playback.
+    /// Initialize ES8311 for 16-bit I2S playback.
     /// Exactly mirrors the C driver es8311_init() from Waveshare examples.
     pub fn init(&mut self) -> Result<(), I::Error> {
         // Reset sequence (CRITICAL: must write 0x80 after reset!)
@@ -31,10 +31,9 @@ impl<I: I2c> Es8311<I> {
         self.write_reg(0x00, 0x00)?; // Clear reset
         self.write_reg(0x00, 0x80)?; // Power-on command
 
-        // Clock config for MCLK from pin, 16kHz sample rate
-        // MCLK = 16000 * 256 = 4,096,000 Hz
-        // Coefficients from table: {4096000, 16000, pre_div=2, pre_multi=0,
-        //   adc_div=1, dac_div=1, fs_mode=0, lrck_h=0, lrck_l=0xFF, bclk_div=4, adc_osr=0x10, dac_osr=0x10}
+        // Clock config for MCLK from pin. The I2S peripheral supplies
+        // 256 * sample_rate MCLK; these C-reference coefficients keep the
+        // codec in 256fs, 16-bit stereo mode.
         self.write_reg(0x01, 0x3F)?; // Enable all clocks, MCLK from pin
 
         // Reg 0x02: pre_div and pre_multi
@@ -123,23 +122,4 @@ impl<I: I2c> Es8311<I> {
     }
 
     pub fn is_initialized(&self) -> bool { self.initialized }
-}
-
-/// Fill a buffer with a square wave beep (stereo 16-bit LE).
-pub fn fill_beep_buffer(buf: &mut [u8], freq_hz: u32, sample_rate: u32, duration_ms: u32) -> usize {
-    let total_samples = (sample_rate * duration_ms / 1000) as usize;
-    let period = if freq_hz > 0 { sample_rate / freq_hz } else { 1 };
-    let half = period / 2;
-    let amplitude: i16 = 10000;
-    let mut pos = 0;
-    for i in 0..total_samples {
-        if pos + 4 > buf.len() { break; }
-        let phase = (i as u32) % period;
-        let sample = if phase < half { amplitude } else { -amplitude };
-        let bytes = sample.to_le_bytes();
-        buf[pos] = bytes[0]; buf[pos + 1] = bytes[1]; // L
-        buf[pos + 2] = bytes[0]; buf[pos + 3] = bytes[1]; // R
-        pos += 4;
-    }
-    pos
 }

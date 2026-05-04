@@ -4,6 +4,8 @@
 extern crate alloc;
 
 mod apps;
+#[cfg(feature = "audio")]
+mod audio_clip;
 mod board;
 mod drivers;
 mod peripherals;
@@ -63,7 +65,7 @@ use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
 #[cfg(feature = "audio")]
-use crate::peripherals::audio::{fill_beep_buffer, Es8311};
+use crate::peripherals::audio::Es8311;
 use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
@@ -78,6 +80,25 @@ use crate::ui::watchface::WatchFace;
 const AOD_BRIGHTNESS: u8 = 0xCC; // ~80%
 const AOD_DURATION_SECS: u64 = 7;
 const SCREEN_OFF_HOUSEKEEPING_SECS: u64 = 600;
+const STARTUP_BEEP_TEST: bool = false;
+#[cfg(feature = "audio")]
+const AUDIO_SAMPLE_RATE_HZ: u32 = audio_clip::SAMPLE_RATE_HZ;
+#[cfg(feature = "audio")]
+const AUDIO_DMA_BUFFER_BYTES: usize = 4000;
+#[cfg(feature = "audio")]
+const AUDIO_CLIP_I2S_BYTES: usize = audio_clip::SAMPLES.len() * 4;
+#[cfg(feature = "audio")]
+const AUDIO_CLIP_MS: u32 = audio_clip::DURATION_MS;
+#[cfg(feature = "audio")]
+const AUDIO_SAMPLE_GAIN: i32 = 256; //2048;
+#[cfg(feature = "audio")]
+const AUDIO_ALERT_FIRST_CLIPS: u8 = 0;
+#[cfg(feature = "audio")]
+const AUDIO_ALERT_MIDDLE_SILENCE_REPEATS: u8 = 6;
+#[cfg(feature = "audio")]
+const AUDIO_ALERT_LAST_CLIPS: u8 = 1;
+#[cfg(feature = "audio")]
+const AUDIO_ALERT_TAIL_SILENCE_REPEATS: u8 = 1;
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task]
@@ -226,6 +247,23 @@ fn aod_near_scheduled_time(dt: crate::peripherals::rtc::DateTime) -> bool {
     match time_manager::closest_wake(now, &time_manager::schedule::WAKE_SCHEDULE) {
         Ok(Some(wake)) => wake.difference.as_secs() < AOD_ALERT_WINDOW_SECS,
         _ => false,
+    }
+}
+
+#[cfg(feature = "audio")]
+fn load_audio_clip_i2s(buf: &mut [u8; AUDIO_DMA_BUFFER_BYTES]) {
+    for (frame, mono) in audio_clip::SAMPLES.iter().copied().enumerate() {
+        let dst = frame * 4;
+        if dst + 3 >= buf.len() {
+            break;
+        }
+        let sample = ((mono as i32) * AUDIO_SAMPLE_GAIN)
+            .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let bytes = sample.to_le_bytes();
+        buf[dst] = bytes[0];
+        buf[dst + 1] = bytes[1];
+        buf[dst + 2] = bytes[0];
+        buf[dst + 3] = bytes[1];
     }
 }
 
@@ -422,6 +460,7 @@ async fn main(_spawner: Spawner) {
     // Tracks the last minute we rendered in AOD so we update the screen exactly
     // once per minute, not faster. Saves both DMA bandwidth and AMOLED current.
     let mut aod_last_minute: u8 = 99;
+    let mut boot_aod_time_alert = false;
 
     // First visible frame: show AOD before slower optional subsystem init.
     if let Ok(pct) = power.get_battery_percent() {
@@ -434,7 +473,8 @@ async fn main(_spawner: Spawner) {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year);
         watchface.update_next_wake_time(aod_next_wake_time(dt));
-        watchface.update_aod_time_alert(aod_near_scheduled_time(dt));
+        boot_aod_time_alert = aod_near_scheduled_time(dt);
+        watchface.update_aod_time_alert(boot_aod_time_alert);
         aod_last_minute = dt.minutes;
     }
     display.set_brightness(AOD_BRIGHTNESS);
@@ -606,12 +646,18 @@ async fn main(_spawner: Spawner) {
     #[cfg(feature = "audio")]
     let mut i2s_tx: Option<esp_hal::i2s::master::I2sTx<'static, esp_hal::Blocking>> = None;
     #[cfg(feature = "audio")]
-    let mut beep_buf: Option<&'static [u8; 4000]> = None;
+    let mut clip_buf: Option<&'static [u8; AUDIO_DMA_BUFFER_BYTES]> = None;
+    #[cfg(feature = "audio")]
+    let mut silence_buf: Option<&'static [u8; AUDIO_DMA_BUFFER_BYTES]> = None;
     #[cfg(feature = "audio")]
     static I2S_TX_DESC: static_cell::StaticCell<[esp_hal::dma::DmaDescriptor; 8]> =
         static_cell::StaticCell::new();
     #[cfg(feature = "audio")]
-    static BEEP_BUF: static_cell::StaticCell<[u8; 4000]> = static_cell::StaticCell::new();
+    static CLIP_BUF: static_cell::StaticCell<[u8; AUDIO_DMA_BUFFER_BYTES]> =
+        static_cell::StaticCell::new();
+    #[cfg(feature = "audio")]
+    static SILENCE_BUF: static_cell::StaticCell<[u8; AUDIO_DMA_BUFFER_BYTES]> =
+        static_cell::StaticCell::new();
 
     #[cfg(feature = "audio")]
     macro_rules! ensure_audio {
@@ -627,7 +673,7 @@ async fn main(_spawner: Spawner) {
                     let _ = codec.shutdown();
 
                     let i2s_config = esp_hal::i2s::master::Config::default()
-                        .with_sample_rate(Rate::from_hz(16000))
+                        .with_sample_rate(Rate::from_hz(AUDIO_SAMPLE_RATE_HZ))
                         .with_data_format(esp_hal::i2s::master::DataFormat::Data16Channel16);
                     let i2s_periph = esp_hal::i2s::master::I2s::new(i2s0, dma_ch1, i2s_config)
                         .expect("I2S failed")
@@ -639,12 +685,20 @@ async fn main(_spawner: Spawner) {
                         .with_dout(gpio40)
                         .build(I2S_TX_DESC.init([esp_hal::dma::DmaDescriptor::EMPTY; 8]));
 
-                    let buf = BEEP_BUF.init([0u8; 4000]);
-                    let beep_len = fill_beep_buffer(buf, 800, 16000, 50);
-                    println!("[AUDIO] I2S OK ({} bytes beep)", beep_len);
+                    let clip = CLIP_BUF.init_with(|| [0u8; AUDIO_DMA_BUFFER_BYTES]);
+                    load_audio_clip_i2s(clip);
+                    let silence = SILENCE_BUF.init_with(|| [0u8; AUDIO_DMA_BUFFER_BYTES]);
+                    println!(
+                        "[AUDIO] I2S OK (clip: {} mono-i8 samples, {} ms, {} active bytes -> {} DMA bytes)",
+                        audio_clip::SAMPLES.len(),
+                        AUDIO_CLIP_MS,
+                        AUDIO_CLIP_I2S_BYTES.min(clip.len()),
+                        clip.len()
+                    );
                     audio_codec = Some(codec);
                     i2s_tx = Some(tx);
-                    beep_buf = Some(buf);
+                    clip_buf = Some(clip);
+                    silence_buf = Some(silence);
                 } else {
                     println!("[AUDIO] Init unavailable");
                 }
@@ -655,19 +709,75 @@ async fn main(_spawner: Spawner) {
     }
 
     #[cfg(feature = "audio")]
-    macro_rules! play_beep {
-        ($label:expr) => {{
+    macro_rules! play_audio_sequence {
+        (
+            $label:expr,
+            $first_clip_repeats:expr,
+            $middle_silence_repeats:expr,
+            $last_clip_repeats:expr,
+            $tail_silence_repeats:expr
+        ) => {{
             if ensure_audio!() {
-                if let (Some(codec), Some(tx), Some(buf)) =
-                    (audio_codec.as_mut(), i2s_tx.as_mut(), beep_buf)
-                {
+                if let (Some(codec), Some(tx), Some(clip), Some(silence)) = (
+                    audio_codec.as_mut(),
+                    i2s_tx.as_mut(),
+                    clip_buf,
+                    silence_buf,
+                ) {
                     println!("[AUDIO] {}", $label);
                     let _ = codec.unmute();
-                    delay.delay_millis(2);
                     pa_en.set_high();
-                    if let Ok(transfer) = tx.write_dma(buf) {
-                        let _ = transfer.wait();
+                    delay.delay_millis(20);
+
+                    for _ in 0..$first_clip_repeats {
+                        match tx.write_dma(clip) {
+                            Ok(transfer) => {
+                                let _ = transfer.wait();
+                            }
+                            Err(_) => {
+                                println!("[AUDIO] DMA start failed");
+                                break;
+                            }
+                        }
                     }
+
+                    for _ in 0..$middle_silence_repeats {
+                        match tx.write_dma(silence) {
+                            Ok(transfer) => {
+                                let _ = transfer.wait();
+                            }
+                            Err(_) => {
+                                println!("[AUDIO] DMA start failed");
+                                break;
+                            }
+                        }
+                    }
+
+                    for _ in 0..$last_clip_repeats {
+                        match tx.write_dma(clip) {
+                            Ok(transfer) => {
+                                let _ = transfer.wait();
+                            }
+                            Err(_) => {
+                                println!("[AUDIO] DMA start failed");
+                                break;
+                            }
+                        }
+                    }
+
+                    for _ in 0..$tail_silence_repeats {
+                        match tx.write_dma(silence) {
+                            Ok(transfer) => {
+                                let _ = transfer.wait();
+                            }
+                            Err(_) => {
+                                println!("[AUDIO] DMA start failed");
+                                break;
+                            }
+                        }
+                    }
+
+                    delay.delay_millis(5);
                     pa_en.set_low();
                     let _ = codec.mute();
                 }
@@ -678,11 +788,27 @@ async fn main(_spawner: Spawner) {
     }
 
     #[cfg(feature = "audio")]
-    if woke_from_timer {
-        play_beep!("scheduler timer wake beep");
+    if STARTUP_BEEP_TEST {
+        play_audio_sequence!(
+            "startup test clip",
+            AUDIO_ALERT_FIRST_CLIPS,
+            AUDIO_ALERT_MIDDLE_SILENCE_REPEATS,
+            AUDIO_ALERT_LAST_CLIPS,
+            AUDIO_ALERT_TAIL_SILENCE_REPEATS
+        );
+    } else if woke_from_timer && boot_aod_time_alert {
+        play_audio_sequence!(
+            "scheduler timer wake clip",
+            AUDIO_ALERT_FIRST_CLIPS,
+            AUDIO_ALERT_MIDDLE_SILENCE_REPEATS,
+            AUDIO_ALERT_LAST_CLIPS,
+            AUDIO_ALERT_TAIL_SILENCE_REPEATS
+        );
+    } else if woke_from_timer {
+        println!("[AUDIO] Scheduler timer wake beep skipped; not near scheduled time");
     }
     #[cfg(not(feature = "audio"))]
-    if woke_from_timer {
+    if STARTUP_BEEP_TEST || (woke_from_timer && boot_aod_time_alert) {
         println!("[AUDIO] Scheduler timer wake beep skipped; audio feature disabled");
     }
 
@@ -1607,7 +1733,7 @@ async fn main(_spawner: Spawner) {
                             #[cfg(feature = "audio")]
                             {
                                 if snake_game.score() > prev_score {
-                                    play_beep!("snake food beep");
+                                    play_audio_sequence!("snake food clip", 1, 0, 0, 0);
                                 }
                             }
                         }
