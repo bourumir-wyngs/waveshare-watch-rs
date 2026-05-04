@@ -4,6 +4,38 @@ version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = []
+
+# Convenience feature for a full app launcher build.
+apps = [
+    "snake",
+    "game-2048",
+    "tetris",
+    "flappy",
+    "maze",
+    "settings",
+    "mp3-player",
+    "smart-home",
+]
+
+# App features. Enabling any app also enables the launcher UI.
+app-launcher = []
+snake = ["app-launcher"]
+game-2048 = ["app-launcher"]
+tetris = ["app-launcher"]
+flappy = ["app-launcher"]
+maze = ["app-launcher"]
+settings = ["app-launcher"]
+mp3-player = ["app-launcher", "sdcard", "dep:nanomp3"]
+smart-home = ["app-launcher", "http"]
+
+# Optional peripheral/helper features.
+audio = []
+sdcard = ["dep:embedded-sdmmc"]
+http = []
+ble = ["dep:embedded-io", "esp-radio/ble", "esp-radio/coex"]
+
 [dependencies]
 # ESP HAL + Runtime
 esp-hal = { version = "1.0.0", default-features = true, features = ["esp32s3", "unstable", "psram"] }
@@ -30,17 +62,17 @@ embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
 
 # WiFi / Networking
-esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "ble", "coex", "unstable", "log-04"] }
+esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "unstable", "log-04"] }
 embassy-net = { version = "0.9.0", features = ["dhcpv4", "medium-ethernet", "tcp", "udp", "dns"] }
 
 # Peripheral drivers
 axp2101-embedded = "0.3"
-embedded-sdmmc = "0.8"
-embedded-io = "0.6"
-embedded-io-async = "0.6"
+embedded-sdmmc = { version = "0.8", optional = true }
+embedded-io = { version = "0.6", optional = true }
+embedded-io-async = { version = "0.6", optional = true }
 
 # MP3 decoding
-nanomp3 = "0.1"
+nanomp3 = { version = "0.1", optional = true }
 
 [profile.dev]
 opt-level = "s"

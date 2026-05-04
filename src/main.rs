@@ -24,7 +24,7 @@ use esp_hal::delay::Delay;
 use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
 use esp_hal::dma_buffers;
 // use esp_hal::i2s::master::{I2s, Config as I2sConfig, DataFormat}; // TODO: wire I2S
-use esp_hal::gpio::{InputConfig, Level, Output, OutputConfig, Pull, Input};
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::rtc_cntl::{
     sleep::{Ext0WakeupSource, WakeupLevel},
@@ -36,28 +36,42 @@ use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
 
+#[cfg(feature = "flappy")]
+use crate::apps::flappy::FlappyGame;
+#[cfg(feature = "game-2048")]
+use crate::apps::game2048::Game2048;
+#[cfg(feature = "maze")]
+use crate::apps::maze::MazeGame;
+#[cfg(feature = "mp3-player")]
+use crate::apps::mp3player::Mp3Player;
+#[cfg(feature = "settings")]
+use crate::apps::settings::SettingsApp;
+#[cfg(feature = "smart-home")]
+use crate::apps::smarthome::SmartHomeApp;
+#[cfg(feature = "snake")]
+use crate::apps::snake::SnakeGame;
+#[cfg(feature = "tetris")]
+use crate::apps::tetris::TetrisGame;
+#[cfg(feature = "snake")]
+use crate::apps::AppResult;
+use crate::apps::AppState;
+#[cfg(feature = "app-launcher")]
+use crate::apps::{App, AppInput};
 use crate::drivers::co5300::Co5300Display;
 use crate::drivers::framebuffer::Framebuffer;
 use crate::drivers::qspi_bus::QspiBus;
+#[cfg(feature = "audio")]
+use crate::peripherals::audio::{fill_beep_buffer, Es8311};
+use crate::peripherals::imu::Qmi8658Imu;
 use crate::peripherals::power::Axp2101Power;
 use crate::peripherals::power_stats::{DisplayState, PowerStats, WifiMode};
-use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
 use crate::peripherals::rtc::Pcf85063aRtc;
-use crate::peripherals::imu::Qmi8658Imu;
-use crate::ui::watchface::WatchFace;
+use crate::peripherals::touch::{Ft3168Touch, SwipeDirection};
+#[cfg(feature = "app-launcher")]
+use crate::ui::launcher::Launcher;
 use crate::ui::pages::{self, Page};
 use crate::ui::power_page;
-use crate::apps::{App, AppInput, AppResult, AppState};
-use crate::apps::snake::SnakeGame;
-use crate::apps::game2048::Game2048;
-use crate::apps::tetris::TetrisGame;
-use crate::apps::flappy::FlappyGame;
-use crate::apps::maze::MazeGame;
-use crate::ui::launcher::Launcher;
-use crate::apps::settings::SettingsApp;
-use crate::apps::mp3player::Mp3Player;
-use crate::apps::smarthome::SmartHomeApp;
-use crate::peripherals::audio::{Es8311, fill_beep_buffer};
+use crate::ui::watchface::WatchFace;
 
 const AOD_BRIGHTNESS: u8 = 0xCC; // ~80%
 const AOD_DURATION_SECS: u64 = 7;
@@ -65,7 +79,9 @@ const SCREEN_OFF_HOUSEKEEPING_SECS: u64 = 600;
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, esp_radio::wifi::WifiDevice<'static>>) -> ! {
+async fn net_task(
+    mut runner: embassy_net::Runner<'static, esp_radio::wifi::WifiDevice<'static>>,
+) -> ! {
     runner.run().await
 }
 
@@ -74,7 +90,7 @@ async fn ntp_sync(
     stack: embassy_net::Stack<'static>,
     rtc: &mut crate::peripherals::rtc::Pcf85063aRtc<impl embedded_hal::i2c::I2c>,
 ) -> Result<(), ()> {
-    use embassy_net::udp::{UdpSocket, PacketMetadata};
+    use embassy_net::udp::{PacketMetadata, UdpSocket};
 
     let mut rx_meta = [PacketMetadata::EMPTY; 1];
     let mut rx_buf = [0u8; 256];
@@ -90,17 +106,19 @@ async fn ntp_sync(
 
     // Resolve pool.ntp.org (use Google's NTP IP directly: 216.239.35.0)
     let ntp_addr = embassy_net::Ipv4Address::new(216, 239, 35, 0);
-    socket.send_to(&ntp_request, (ntp_addr, 123)).await.map_err(|_| ())?;
+    socket
+        .send_to(&ntp_request, (ntp_addr, 123))
+        .await
+        .map_err(|_| ())?;
 
     // Wait for response (timeout 5s)
     let mut response = [0u8; 48];
-    match embassy_time::with_timeout(
-        Duration::from_secs(5),
-        socket.recv_from(&mut response),
-    ).await {
+    match embassy_time::with_timeout(Duration::from_secs(5), socket.recv_from(&mut response)).await
+    {
         Ok(Ok((len, _addr))) if len >= 48 => {
             // Parse NTP timestamp (bytes 40-43 = seconds since 1900-01-01)
-            let ntp_secs = u32::from_be_bytes([response[40], response[41], response[42], response[43]]);
+            let ntp_secs =
+                u32::from_be_bytes([response[40], response[41], response[42], response[43]]);
             // Convert NTP epoch (1900) to Unix epoch (1970): subtract 70 years in seconds
             let unix_secs = ntp_secs.wrapping_sub(2_208_988_800);
             // Convert to hours/minutes/seconds (UTC+2 for France)
@@ -116,12 +134,19 @@ async fn ntp_sync(
             // Simple date from days since 1970-01-01
             let (year, month, day) = days_to_date(total_days);
 
-            println!("[NTP] Time: {:02}:{:02}:{:02} {:02}/{:02}/{}", hours, minutes, seconds, day, month, year);
+            println!(
+                "[NTP] Time: {:02}:{:02}:{:02} {:02}/{:02}/{}",
+                hours, minutes, seconds, day, month, year
+            );
 
             // Set RTC
             let dt = crate::peripherals::rtc::DateTime::new(
-                (year - 2000) as u8, month as u8, day as u8,
-                hours, minutes, seconds,
+                (year - 2000) as u8,
+                month as u8,
+                day as u8,
+                hours,
+                minutes,
+                seconds,
             );
             let _ = rtc.set_time(&dt);
             Ok(())
@@ -135,19 +160,50 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
     let mut y = 1970i32;
     let mut remaining = days_since_epoch;
     loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-        if remaining < days_in_year { break; }
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
         remaining -= days_in_year;
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 0;
     while m < 12 && remaining >= month_days[m] {
         remaining -= month_days[m];
         m += 1;
     }
     (y as u32, (m + 1) as u32, (remaining + 1) as u32)
+}
+
+fn app_needs_motion_imu(app_state: AppState) -> bool {
+    match app_state {
+        #[cfg(feature = "maze")]
+        AppState::Maze => true,
+        #[cfg(feature = "tetris")]
+        AppState::Tetris => true,
+        #[cfg(feature = "flappy")]
+        AppState::Flappy => true,
+        _ => false,
+    }
 }
 
 use embedded_graphics::pixelcolor::Rgb565;
@@ -207,10 +263,8 @@ async fn main(_spawner: Spawner) {
     // Power-aware: default to 160MHz instead of 240MHz.
     // Saves ~30% CPU power without noticeable impact on UI/sensor work.
     // Game code can still trigger short bursts via DMA/peripherals at 80MHz QSPI which is unchanged.
-    let peripherals = esp_hal::init(
-        esp_hal::Config::default()
-            .with_cpu_clock(esp_hal::clock::CpuClock::_160MHz)
-    );
+    let peripherals =
+        esp_hal::init(esp_hal::Config::default().with_cpu_clock(esp_hal::clock::CpuClock::_160MHz));
 
     // PSRAM
     esp_alloc::psram_allocator!(peripherals.PSRAM, esp_hal::psram);
@@ -289,15 +343,27 @@ async fn main(_spawner: Spawner) {
     // by the Power page renderer. Kept as plain POD so reading it is free.
     let mut power_stats = PowerStats::new();
     power_stats.cpu_mhz = 160;
+    #[cfg(feature = "app-launcher")]
     let mut app_state = AppState::Watchface;
+    #[cfg(not(feature = "app-launcher"))]
+    let app_state = AppState::Watchface;
+    #[cfg(feature = "snake")]
     let mut snake_game = SnakeGame::new();
+    #[cfg(feature = "game-2048")]
     let mut game_2048 = Game2048::new();
+    #[cfg(feature = "tetris")]
     let mut tetris_game = TetrisGame::new();
+    #[cfg(feature = "flappy")]
     let mut flappy_game = FlappyGame::new();
+    #[cfg(feature = "maze")]
     let mut maze_game = MazeGame::new();
+    #[cfg(feature = "app-launcher")]
     let mut launcher = Launcher::new();
+    #[cfg(feature = "settings")]
     let mut settings_app = SettingsApp::new();
+    #[cfg(feature = "mp3-player")]
     let mut mp3_player = Mp3Player::new();
+    #[cfg(feature = "smart-home")]
     let mut smarthome_app = SmartHomeApp::new();
     let mut last_touch_y: u16 = 0;
     let mut last_touch_x: u16 = 0;
@@ -340,8 +406,14 @@ async fn main(_spawner: Spawner) {
     let mut touch_rst = Output::new(peripherals.GPIO9, Level::High, OutputConfig::default());
     // GPIO38 is the FT3168 INT line: held high by pull-up, pulled low by the controller
     // when a finger is on the screen. We use it both for level checks and as an async wake source.
-    let mut touch_int = Input::new(peripherals.GPIO38, InputConfig::default().with_pull(Pull::Up));
-    touch_rst.set_low(); delay.delay_millis(10); touch_rst.set_high(); delay.delay_millis(50);
+    let mut touch_int = Input::new(
+        peripherals.GPIO38,
+        InputConfig::default().with_pull(Pull::Up),
+    );
+    touch_rst.set_low();
+    delay.delay_millis(10);
+    touch_rst.set_high();
+    delay.delay_millis(50);
     let mut touch = Ft3168Touch::new(RefCellDevice::new(&i2c_ref));
     let _ = touch.init();
     println!("[TOUCH] OK");
@@ -352,6 +424,7 @@ async fn main(_spawner: Spawner) {
     println!("[IMU] Deferred");
 
     // === Lazy SD Card (SPI3) ===
+    #[cfg(feature = "mp3-player")]
     let mut sd_tokens = Some((
         peripherals.SPI3,
         peripherals.GPIO2,
@@ -359,9 +432,12 @@ async fn main(_spawner: Spawner) {
         peripherals.GPIO3,
         peripherals.GPIO17,
     ));
+    #[cfg(feature = "mp3-player")]
     let mut sd_scanned = false;
+    #[cfg(feature = "mp3-player")]
     let mut mp3_files: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
 
+    #[cfg(feature = "mp3-player")]
     macro_rules! ensure_mp3_scan {
         () => {{
             if !sd_scanned {
@@ -378,7 +454,8 @@ async fn main(_spawner: Spawner) {
                         .with_miso(gpio3);
                     let sd_cs = Output::new(gpio17, Level::High, OutputConfig::default());
                     let sd_spi_dev =
-                        embedded_hal_bus::spi::ExclusiveDevice::new_no_delay(sd_spi, sd_cs).unwrap();
+                        embedded_hal_bus::spi::ExclusiveDevice::new_no_delay(sd_spi, sd_cs)
+                            .unwrap();
                     let sd_card = embedded_sdmmc::SdCard::new(sd_spi_dev, Delay::new());
 
                     match sd_card.num_bytes() {
@@ -393,7 +470,8 @@ async fn main(_spawner: Spawner) {
                                 }
                             }
 
-                            let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sd_card, DummyTime);
+                            let mut volume_mgr =
+                                embedded_sdmmc::VolumeManager::new(sd_card, DummyTime);
                             match volume_mgr.open_raw_volume(embedded_sdmmc::VolumeIdx(0)) {
                                 Ok(volume) => {
                                     if let Ok(root_dir) = volume_mgr.open_root_dir(volume) {
@@ -401,25 +479,43 @@ async fn main(_spawner: Spawner) {
                                             println!("[SD] Found /MP3/ folder");
                                             let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
                                                 if !entry.attributes.is_directory() {
-                                                    let name = core::str::from_utf8(&entry.name.base_name())
-                                                        .unwrap_or("?");
-                                                    let ext = core::str::from_utf8(&entry.name.extension())
-                                                        .unwrap_or("");
-                                                    let full = alloc::format!("{}.{}", name.trim(), ext.trim());
+                                                    let name = core::str::from_utf8(
+                                                        &entry.name.base_name(),
+                                                    )
+                                                    .unwrap_or("?");
+                                                    let ext = core::str::from_utf8(
+                                                        &entry.name.extension(),
+                                                    )
+                                                    .unwrap_or("");
+                                                    let full = alloc::format!(
+                                                        "{}.{}",
+                                                        name.trim(),
+                                                        ext.trim()
+                                                    );
                                                     println!("[SD]   {}", full);
                                                     mp3_files.push(full);
                                                 }
                                             });
                                             let _ = volume_mgr.close_dir(mp3_dir);
-                                        } else if let Ok(mp3_dir) = volume_mgr.open_dir(root_dir, "mp3") {
+                                        } else if let Ok(mp3_dir) =
+                                            volume_mgr.open_dir(root_dir, "mp3")
+                                        {
                                             println!("[SD] Found /mp3/ folder");
                                             let _ = volume_mgr.iterate_dir(mp3_dir, |entry| {
                                                 if !entry.attributes.is_directory() {
-                                                    let name = core::str::from_utf8(&entry.name.base_name())
-                                                        .unwrap_or("?");
-                                                    let ext = core::str::from_utf8(&entry.name.extension())
-                                                        .unwrap_or("");
-                                                    let full = alloc::format!("{}.{}", name.trim(), ext.trim());
+                                                    let name = core::str::from_utf8(
+                                                        &entry.name.base_name(),
+                                                    )
+                                                    .unwrap_or("?");
+                                                    let ext = core::str::from_utf8(
+                                                        &entry.name.extension(),
+                                                    )
+                                                    .unwrap_or("");
+                                                    let full = alloc::format!(
+                                                        "{}.{}",
+                                                        name.trim(),
+                                                        ext.trim()
+                                                    );
                                                     println!("[SD]   {}", full);
                                                     mp3_files.push(full);
                                                 }
@@ -454,7 +550,9 @@ async fn main(_spawner: Spawner) {
     }
 
     // === Lazy audio (ES8311 codec + I2S) ===
+    #[cfg(feature = "audio")]
     let mut pa_en = Output::new(peripherals.GPIO46, Level::Low, OutputConfig::default());
+    #[cfg(feature = "audio")]
     let mut audio_tokens = Some((
         peripherals.I2S0,
         peripherals.DMA_CH1,
@@ -463,15 +561,19 @@ async fn main(_spawner: Spawner) {
         peripherals.GPIO45,
         peripherals.GPIO40,
     ));
-    let mut audio_codec: Option<
-        Es8311<RefCellDevice<'_, I2c<'static, esp_hal::Blocking>>>,
-    > = None;
+    #[cfg(feature = "audio")]
+    let mut audio_codec: Option<Es8311<RefCellDevice<'_, I2c<'static, esp_hal::Blocking>>>> = None;
+    #[cfg(feature = "audio")]
     let mut i2s_tx: Option<esp_hal::i2s::master::I2sTx<'static, esp_hal::Blocking>> = None;
+    #[cfg(feature = "audio")]
     let mut beep_buf: Option<&'static [u8; 4000]> = None;
+    #[cfg(feature = "audio")]
     static I2S_TX_DESC: static_cell::StaticCell<[esp_hal::dma::DmaDescriptor; 8]> =
         static_cell::StaticCell::new();
+    #[cfg(feature = "audio")]
     static BEEP_BUF: static_cell::StaticCell<[u8; 4000]> = static_cell::StaticCell::new();
 
+    #[cfg(feature = "audio")]
     macro_rules! ensure_audio {
         () => {{
             if audio_codec.is_none() {
@@ -490,7 +592,8 @@ async fn main(_spawner: Spawner) {
                     let i2s_periph = esp_hal::i2s::master::I2s::new(i2s0, dma_ch1, i2s_config)
                         .expect("I2S failed")
                         .with_mclk(gpio16);
-                    let tx = i2s_periph.i2s_tx
+                    let tx = i2s_periph
+                        .i2s_tx
                         .with_bclk(gpio41)
                         .with_ws(gpio45)
                         .with_dout(gpio40)
@@ -512,9 +615,13 @@ async fn main(_spawner: Spawner) {
     }
 
     // === Lazy radio/network ===
+    #[cfg(feature = "ble")]
     let mut radio_tokens = Some((peripherals.WIFI, peripherals.BT));
+    #[cfg(not(feature = "ble"))]
+    let mut radio_tokens = Some(peripherals.WIFI);
     let mut wifi_controller: Option<esp_radio::wifi::WifiController<'static>> = None;
     let mut stack: Option<embassy_net::Stack<'static>> = None;
+    #[cfg(feature = "ble")]
     let mut ble_connector: Option<esp_radio::ble::controller::BleConnector<'static>> = None;
     static RADIO: static_cell::StaticCell<esp_radio::Controller<'static>> =
         static_cell::StaticCell::new();
@@ -524,7 +631,7 @@ async fn main(_spawner: Spawner) {
     // Pre-fill STA credentials so "toggle WiFi" just flips a bit later.
     // Falls back to empty strings if WIFI_SSID / WIFI_PASS are not set at
     // compile time — WiFi simply won't connect but the watch boots fine.
-    use esp_radio::wifi::{ModeConfig, ClientConfig, AuthMethod};
+    use esp_radio::wifi::{AuthMethod, ClientConfig, ModeConfig};
     let wifi_ssid = option_env!("WIFI_SSID").unwrap_or("");
     let wifi_pass = option_env!("WIFI_PASS").unwrap_or("");
     let wifi_has_creds = !wifi_ssid.is_empty();
@@ -535,18 +642,21 @@ async fn main(_spawner: Spawner) {
     macro_rules! ensure_radio {
         () => {{
             if wifi_controller.is_none() {
-                if let Some((wifi_periph, bt_periph)) = radio_tokens.take() {
+                if let Some(radio_periphs) = radio_tokens.take() {
+                    #[cfg(feature = "ble")]
+                    let (wifi_periph, bt_periph) = radio_periphs;
+                    #[cfg(not(feature = "ble"))]
+                    let wifi_periph = radio_periphs;
+
                     println!("[RADIO] Lazy init radio stack...");
                     let radio_controller: &'static esp_radio::Controller<'static> =
                         RADIO.init(esp_radio::init().expect("esp-radio init failed"));
 
                     let wifi_config = esp_radio::wifi::Config::default()
                         .with_power_save_mode(esp_radio::wifi::PowerSaveMode::Maximum);
-                    let (mut new_wifi_controller, wifi_interfaces) = esp_radio::wifi::new(
-                        radio_controller,
-                        wifi_periph,
-                        wifi_config,
-                    ).expect("WiFi init failed");
+                    let (mut new_wifi_controller, wifi_interfaces) =
+                        esp_radio::wifi::new(radio_controller, wifi_periph, wifi_config)
+                            .expect("WiFi init failed");
 
                     let client_config = ClientConfig::default()
                         .with_ssid(alloc::string::String::from(wifi_ssid))
@@ -557,13 +667,9 @@ async fn main(_spawner: Spawner) {
                             AuthMethod::WpaWpa2Personal
                         });
                     let mode_config = ModeConfig::Client(client_config);
-                    new_wifi_controller.set_config(&mode_config).expect("WiFi config failed");
-
-                    let new_ble_connector = esp_radio::ble::controller::BleConnector::new(
-                        radio_controller,
-                        bt_periph,
-                        esp_radio::ble::Config::default(),
-                    ).expect("BLE init failed");
+                    new_wifi_controller
+                        .set_config(&mode_config)
+                        .expect("WiFi config failed");
 
                     let resources = RESOURCES.init(embassy_net::StackResources::new());
                     let net_config = embassy_net::Config::dhcpv4(Default::default());
@@ -573,8 +679,20 @@ async fn main(_spawner: Spawner) {
 
                     wifi_controller = Some(new_wifi_controller);
                     stack = Some(new_stack);
-                    ble_connector = Some(new_ble_connector);
+                    #[cfg(feature = "ble")]
+                    {
+                        let new_ble_connector = esp_radio::ble::controller::BleConnector::new(
+                            radio_controller,
+                            bt_periph,
+                            esp_radio::ble::Config::default(),
+                        )
+                        .expect("BLE init failed");
+                        ble_connector = Some(new_ble_connector);
+                    }
+                    #[cfg(feature = "ble")]
                     println!("[RADIO] Ready (WiFi OFF, BLE OFF)");
+                    #[cfg(not(feature = "ble"))]
+                    println!("[RADIO] Ready (WiFi OFF)");
                 } else {
                     println!("[RADIO] Init unavailable");
                 }
@@ -587,7 +705,10 @@ async fn main(_spawner: Spawner) {
     // Keep the GPIO0 owner available so the deep-sleep path can drop this
     // Input and hand the same pin to RTC wake as BOOT.
     let mut boot_pin = peripherals.GPIO0;
-    let mut boot_button = Input::new(boot_pin.reborrow(), InputConfig::default().with_pull(Pull::Up));
+    let mut boot_button = Input::new(
+        boot_pin.reborrow(),
+        InputConfig::default().with_pull(Pull::Up),
+    );
     // If this boot was caused by the BOOT button, the pin may still be held low.
     // Do not treat it as a new sleep request until it has been released once.
     let mut boot_button_armed = !boot_button.is_low();
@@ -622,19 +743,22 @@ async fn main(_spawner: Spawner) {
 
     let mut next_rtc = Instant::now();
     let mut next_battery = Instant::now();
+    #[cfg(feature = "app-launcher")]
     let mut last_frame = Instant::now();
     let mut next_watchface_flush = Instant::now();
     // Radio state: we track both what the user *wants* and what the radio
     // actually is. They drift apart briefly during connect/disconnect.
-    let mut wifi_on_request: bool = false;      // user toggle
-    let mut wifi_started: bool = false;         // controller.start() called
-    let mut wifi_connected: bool = false;       // connect_async succeeded
+    let mut wifi_on_request: bool = false; // user toggle
+    let mut wifi_started: bool = false; // controller.start() called
+    let mut wifi_connected: bool = false; // connect_async succeeded
     let mut ntp_synced: bool = false;
     let mut last_wifi_idle_check = Instant::now();
     // Request pending from a UI tap on the WiFi button.
     let mut wifi_toggle_request: bool = false;
     // BLE state
+    #[cfg(feature = "ble")]
     let mut ble_on: bool = false;
+    #[cfg(feature = "ble")]
     let mut ble_toggle_request: bool = false;
     // Power-down the IMU at boot — only enable when a consumer (gyro toggle, game, sensors page) needs it.
     let _ = imu.power_down();
@@ -667,25 +791,40 @@ async fn main(_spawner: Spawner) {
                     Page::Aod => Duration::from_secs(AOD_DURATION_SECS.min(10)),
                     // Clock page: 1 Hz when gyro is off (only seconds change),
                     // 33 ms when gyro is on (smooth ball animation).
-                    Page::Clock => if watchface.gyro_enabled {
-                        Duration::from_millis(33)
-                    } else {
-                        Duration::from_secs(1)
-                    },
+                    Page::Clock => {
+                        if watchface.gyro_enabled {
+                            Duration::from_millis(33)
+                        } else {
+                            Duration::from_secs(1)
+                        }
+                    }
                     Page::Sensors => Duration::from_millis(100), // 10 Hz IMU display
-                    Page::System  => Duration::from_secs(2),     // basically static
+                    Page::System => Duration::from_secs(2),      // basically static
                     // Power page refreshes at 1 Hz — fast enough to see
                     // changes, slow enough not to skew the measurement.
-                    Page::Power   => Duration::from_secs(1),
+                    Page::Power => Duration::from_secs(1),
                 },
-                AppState::Launcher | AppState::Settings | AppState::Mp3Player
-                | AppState::SmartHome => Duration::from_millis(100),
+                #[cfg(feature = "app-launcher")]
+                AppState::Launcher => Duration::from_millis(100),
+                #[cfg(feature = "settings")]
+                AppState::Settings => Duration::from_millis(100),
+                #[cfg(feature = "mp3-player")]
+                AppState::Mp3Player => Duration::from_millis(100),
+                #[cfg(feature = "smart-home")]
+                AppState::SmartHome => Duration::from_millis(100),
                 // Flappy previously ran at 8 ms (~125 Hz). The panel can't
                 // even display that (VSync is ~33 ms) so the extra ticks
                 // just burned CPU and DMA for no visible benefit.
+                #[cfg(feature = "flappy")]
                 AppState::Flappy => Duration::from_millis(33),
-                AppState::Snake | AppState::Game2048 | AppState::Tetris
-                | AppState::Maze => Duration::from_millis(33),
+                #[cfg(feature = "snake")]
+                AppState::Snake => Duration::from_millis(33),
+                #[cfg(feature = "game-2048")]
+                AppState::Game2048 => Duration::from_millis(33),
+                #[cfg(feature = "tetris")]
+                AppState::Tetris => Duration::from_millis(33),
+                #[cfg(feature = "maze")]
+                AppState::Maze => Duration::from_millis(33),
             }
         };
 
@@ -699,11 +838,16 @@ async fn main(_spawner: Spawner) {
             Timer::after(tick),
             touch_int.wait_for_falling_edge(),
             boot_button.wait_for_falling_edge(),
-        ).await;
+        )
+        .await;
 
         let now = Instant::now();
-        let dt_ms = (now - last_frame).as_millis() as u32;
-        last_frame = now;
+        #[cfg(feature = "app-launcher")]
+        let dt_ms = {
+            let elapsed_ms = (now - last_frame).as_millis() as u32;
+            last_frame = now;
+            elapsed_ms
+        };
 
         let button_pressed = boot_button.is_low();
         let mut low_power_reason: Option<&'static str> = None;
@@ -718,7 +862,8 @@ async fn main(_spawner: Spawner) {
         if low_power_reason.is_none()
             && current_page == Page::Aod
             && screen_state == 1
-            && (now - aod_entered_at).as_secs() >= AOD_DURATION_SECS {
+            && (now - aod_entered_at).as_secs() >= AOD_DURATION_SECS
+        {
             low_power_reason = Some("AOD timeout");
         }
 
@@ -730,7 +875,8 @@ async fn main(_spawner: Spawner) {
                     let _ = embassy_time::with_timeout(
                         Duration::from_secs(1),
                         controller.disconnect_async(),
-                    ).await;
+                    )
+                    .await;
                 }
             }
             if wifi_started {
@@ -738,15 +884,21 @@ async fn main(_spawner: Spawner) {
                     let _ = controller.stop();
                 }
             }
-            if ble_on {
-                if let Some(connector) = ble_connector.as_mut() {
-                    let _ = crate::peripherals::ble::stop_advertising(connector);
+            #[cfg(feature = "ble")]
+            {
+                if ble_on {
+                    if let Some(connector) = ble_connector.as_mut() {
+                        let _ = crate::peripherals::ble::stop_advertising(connector);
+                    }
                 }
             }
 
-            pa_en.set_low();
-            if let Some(codec) = audio_codec.as_mut() {
-                let _ = codec.shutdown();
+            #[cfg(feature = "audio")]
+            {
+                pa_en.set_low();
+                if let Some(codec) = audio_codec.as_mut() {
+                    let _ = codec.shutdown();
+                }
             }
             if imu_initialized {
                 let _ = imu.power_down();
@@ -769,9 +921,7 @@ async fn main(_spawner: Spawner) {
         // (CTRL7 = 0). The QMI8658's gyro alone draws ~1.5 mA so this is a meaningful win.
         let need_motion_imu = screen_state == 3
             && (watchface.gyro_enabled
-                || app_state == AppState::Maze
-                || app_state == AppState::Tetris
-                || app_state == AppState::Flappy
+                || app_needs_motion_imu(app_state)
                 || (app_state == AppState::Watchface && current_page == Page::Sensors));
         if need_motion_imu && !imu_initialized {
             match imu.init() {
@@ -783,11 +933,19 @@ async fn main(_spawner: Spawner) {
                 Err(_) => println!("[IMU] Lazy init failed"),
             }
         }
-        let target_imu_mode = if need_motion_imu && imu_initialized { 2 } else { 0 };
+        let target_imu_mode = if need_motion_imu && imu_initialized {
+            2
+        } else {
+            0
+        };
         if target_imu_mode != imu_mode {
             match target_imu_mode {
-                2 if imu_initialized => { let _ = imu.power_up(); }
-                _ if imu_initialized => { let _ = imu.power_down(); }
+                2 if imu_initialized => {
+                    let _ = imu.power_up();
+                }
+                _ if imu_initialized => {
+                    let _ = imu.power_down();
+                }
                 _ => {}
             }
             imu_mode = target_imu_mode;
@@ -800,7 +958,11 @@ async fn main(_spawner: Spawner) {
         }
         if need_motion_imu && imu_initialized {
             if let Ok(g) = imu.read_gyro() {
-                gyro_data = ((g.x * 10.0) as i16, (g.y * 10.0) as i16, (g.z * 10.0) as i16);
+                gyro_data = (
+                    (g.x * 10.0) as i16,
+                    (g.y * 10.0) as i16,
+                    (g.z * 10.0) as i16,
+                );
             }
             if let Ok(t) = imu.read_temperature() {
                 imu_temp = (t * 10.0) as i16;
@@ -860,7 +1022,8 @@ async fn main(_spawner: Spawner) {
                         // The old live slide transition streamed partial frames while
                         // dragging, which could saturate the display bus and stutter.
                         let on_slider = current_page == Page::Clock
-                            && WatchFace::brightness_from_tap(swipe.start_x, swipe.start_y).is_some();
+                            && WatchFace::brightness_from_tap(swipe.start_x, swipe.start_y)
+                                .is_some();
                         match swipe.direction {
                             SwipeDirection::Left if !on_slider => {
                                 current_page = current_page.next();
@@ -919,9 +1082,8 @@ async fn main(_spawner: Spawner) {
         // AOD timeout enters deep sleep earlier in the loop. Touch wakes only
         // while the display is still on; BOOT is reserved for low-power entry.
         let any_touch = touch_int.is_low();
-        let aod_swipeable = app_state == AppState::Watchface
-            && current_page == Page::Aod
-            && screen_state == 1;
+        let aod_swipeable =
+            app_state == AppState::Watchface && current_page == Page::Aod && screen_state == 1;
         if any_touch || swipe_event.is_some() || tap_event {
             last_interaction = now;
             if screen_state == 0 {
@@ -973,7 +1135,10 @@ async fn main(_spawner: Spawner) {
             wifi_on_request = !wifi_on_request;
             wifi_toggle_request = false;
             last_wifi_idle_check = now;
-            println!("[WIFI] User toggled → {}", if wifi_on_request { "ON" } else { "OFF" });
+            println!(
+                "[WIFI] User toggled → {}",
+                if wifi_on_request { "ON" } else { "OFF" }
+            );
         } else if wifi_toggle_request {
             wifi_toggle_request = false; // swallow the bounce
         }
@@ -992,7 +1157,9 @@ async fn main(_spawner: Spawner) {
                         match embassy_time::with_timeout(
                             Duration::from_secs(8),
                             controller.connect_async(),
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(Ok(())) => {
                                 println!("[WIFI] Connected (PS=MaxModem)");
                                 wifi_connected = true;
@@ -1003,7 +1170,9 @@ async fn main(_spawner: Spawner) {
                                 if !ntp_synced {
                                     if let Some(stack) = stack {
                                         for _ in 0..30 {
-                                            if stack.config_v4().is_some() { break; }
+                                            if stack.config_v4().is_some() {
+                                                break;
+                                            }
                                             Timer::after(Duration::from_millis(100)).await;
                                         }
                                         if stack.config_v4().is_some() {
@@ -1048,43 +1217,45 @@ async fn main(_spawner: Spawner) {
             last_wifi_idle_check = now;
         }
         // Safety net: WiFi left on, user idle 5 min → auto-off.
-        if wifi_on_request && idle_secs >= 300
-            && (now - last_wifi_idle_check).as_secs() >= 60 {
+        if wifi_on_request && idle_secs >= 300 && (now - last_wifi_idle_check).as_secs() >= 60 {
             wifi_on_request = false;
             last_wifi_idle_check = now;
         }
 
         // === BLE state machine ===
-        if ble_toggle_request {
-            ble_toggle_request = false;
-            ble_on = !ble_on;
-            if ble_on {
-                if ensure_radio!() {
-                    if let Some(connector) = ble_connector.as_mut() {
-                        match crate::peripherals::ble::start_advertising(connector) {
-                            Ok(()) => println!("[BLE] Advertising started"),
-                            Err(_) => {
-                                println!("[BLE] Failed to start advertising");
-                                ble_on = false;
+        #[cfg(feature = "ble")]
+        {
+            if ble_toggle_request {
+                ble_toggle_request = false;
+                ble_on = !ble_on;
+                if ble_on {
+                    if ensure_radio!() {
+                        if let Some(connector) = ble_connector.as_mut() {
+                            match crate::peripherals::ble::start_advertising(connector) {
+                                Ok(()) => println!("[BLE] Advertising started"),
+                                Err(_) => {
+                                    println!("[BLE] Failed to start advertising");
+                                    ble_on = false;
+                                }
                             }
+                        } else {
+                            println!("[BLE] Connector unavailable");
+                            ble_on = false;
                         }
                     } else {
-                        println!("[BLE] Connector unavailable");
                         ble_on = false;
                     }
                 } else {
-                    ble_on = false;
+                    if let Some(connector) = ble_connector.as_mut() {
+                        let _ = crate::peripherals::ble::stop_advertising(connector);
+                    }
+                    println!("[BLE] Advertising stopped");
                 }
-            } else {
-                if let Some(connector) = ble_connector.as_mut() {
-                    let _ = crate::peripherals::ble::stop_advertising(connector);
-                }
-                println!("[BLE] Advertising stopped");
+                watchface.ble_on = ble_on;
+                power_stats.ble_on = ble_on;
+                watchface.force_redraw();
+                page_dirty = true;
             }
-            watchface.ble_on = ble_on;
-            power_stats.ble_on = ble_on;
-            watchface.force_redraw();
-            page_dirty = true;
         }
 
         // === AOD render path ===
@@ -1120,17 +1291,31 @@ async fn main(_spawner: Spawner) {
                 if page_dirty {
                     fb.clear_color(current_page.color());
                     match current_page {
-                        Page::Aod => { aod_last_minute = 99; }
-                        Page::Clock => { watchface.force_redraw(); }
-                        Page::System => { let _ = pages::draw_system_page(&mut fb, batt_mv, batt_pct, charging); }
+                        Page::Aod => {
+                            aod_last_minute = 99;
+                        }
+                        Page::Clock => {
+                            watchface.force_redraw();
+                        }
+                        Page::System => {
+                            let _ = pages::draw_system_page(&mut fb, batt_mv, batt_pct, charging);
+                        }
                         Page::Power => {
                             // Rebuild stats snapshot, then render once.
                             // Subsequent frames will only redraw every
                             // ~1 s (see below) to keep the diagnostic
                             // itself cheap.
-                            update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
-                                wifi_connected, wifi_on_request, watchface.brightness,
-                                batt_mv, batt_pct, charging);
+                            update_power_stats(
+                                &mut power_stats,
+                                screen_state,
+                                imu_mode != 0,
+                                wifi_connected,
+                                wifi_on_request,
+                                watchface.brightness,
+                                batt_mv,
+                                batt_pct,
+                                charging,
+                            );
                             let _ = power_page::draw_power_page(&mut fb, &power_stats);
                         }
                         _ => {}
@@ -1165,7 +1350,16 @@ async fn main(_spawner: Spawner) {
                         let ay = (accel.1 * 100.0) as i16;
                         let az = (accel.2 * 100.0) as i16;
                         fb.clear_color(current_page.color());
-                        let _ = pages::draw_sensors_page(&mut fb, ax, ay, az, gyro_data.0, gyro_data.1, gyro_data.2, imu_temp);
+                        let _ = pages::draw_sensors_page(
+                            &mut fb,
+                            ax,
+                            ay,
+                            az,
+                            gyro_data.0,
+                            gyro_data.1,
+                            gyro_data.2,
+                            imu_temp,
+                        );
                         need_flush = true;
                     }
                     Page::Power => {
@@ -1173,9 +1367,17 @@ async fn main(_spawner: Spawner) {
                         // and the diagnostic itself starts to skew the
                         // measurement it's supposed to report.
                         if now >= next_watchface_flush {
-                            update_power_stats(&mut power_stats, screen_state, imu_mode != 0,
-                                wifi_connected, wifi_on_request, watchface.brightness,
-                                batt_mv, batt_pct, charging);
+                            update_power_stats(
+                                &mut power_stats,
+                                screen_state,
+                                imu_mode != 0,
+                                wifi_connected,
+                                wifi_on_request,
+                                watchface.brightness,
+                                batt_mv,
+                                batt_pct,
+                                charging,
+                            );
                             let _ = power_page::draw_power_page(&mut fb, &power_stats);
                             need_flush = true;
                             next_watchface_flush = now + Duration::from_secs(1);
@@ -1203,32 +1405,53 @@ async fn main(_spawner: Spawner) {
                             page_dirty = true;
                         }
                     } else if tap_event {
-                        // BLE toggle
-                        if WatchFace::is_ble_zone(last_touch_x, last_touch_y) {
-                            ble_toggle_request = true;
-                            watchface.force_redraw();
-                            page_dirty = true;
+                        #[cfg(any(feature = "ble", feature = "app-launcher"))]
+                        let mut handled_tap = false;
+                        #[cfg(not(any(feature = "ble", feature = "app-launcher")))]
+                        let handled_tap = false;
+
+                        #[cfg(feature = "ble")]
+                        {
+                            // BLE toggle
+                            if WatchFace::is_ble_zone(last_touch_x, last_touch_y) {
+                                ble_toggle_request = true;
+                                watchface.force_redraw();
+                                page_dirty = true;
+                                handled_tap = true;
+                            }
+                        }
+
                         // WiFi toggle
-                        } else if WatchFace::is_wifi_zone(last_touch_x, last_touch_y) {
+                        if !handled_tap && WatchFace::is_wifi_zone(last_touch_x, last_touch_y) {
                             wifi_toggle_request = true;
                             watchface.force_redraw();
                             page_dirty = true;
                         // CPU frequency cycle (live DVFS)
-                        } else if WatchFace::is_cpu_zone(last_touch_x, last_touch_y) {
+                        } else if !handled_tap && WatchFace::is_cpu_zone(last_touch_x, last_touch_y)
+                        {
                             watchface.cycle_cpu();
-                            let actual = crate::peripherals::cpu_clock::set_cpu_mhz(watchface.cpu_mhz);
+                            let actual =
+                                crate::peripherals::cpu_clock::set_cpu_mhz(watchface.cpu_mhz);
                             watchface.cpu_mhz = actual;
                             power_stats.cpu_mhz = actual;
                             println!("CPU freq: {}MHz (live)", actual);
                             watchface.force_redraw();
                             page_dirty = true;
-                        // Apps launcher
-                        } else if WatchFace::is_apps_zone(last_touch_x, last_touch_y) {
-                            app_state = AppState::Launcher;
-                        // Gyro toggle
-                        } else if WatchFace::is_gyro_zone(last_touch_y) {
-                            let enabled = watchface.toggle_gyro();
-                            println!("Gyro: {}", if enabled { "ON" } else { "OFF" });
+                        } else {
+                            #[cfg(feature = "app-launcher")]
+                            {
+                                if !handled_tap
+                                    && WatchFace::is_apps_zone(last_touch_x, last_touch_y)
+                                {
+                                    app_state = AppState::Launcher;
+                                    handled_tap = true;
+                                }
+                            }
+                            // Gyro toggle
+                            if !handled_tap && WatchFace::is_gyro_zone(last_touch_y) {
+                                let enabled = watchface.toggle_gyro();
+                                println!("Gyro: {}", if enabled { "ON" } else { "OFF" });
+                            }
                         }
                     }
                 }
@@ -1242,14 +1465,19 @@ async fn main(_spawner: Spawner) {
                 }
 
                 // Swipe up on Clock → launcher
-                if let Some(SwipeDirection::Up) = swipe_event {
-                    if current_page == Page::Clock {
-                        app_state = AppState::Launcher;
+                #[cfg(feature = "app-launcher")]
+                {
+                    if let Some(SwipeDirection::Up) = swipe_event {
+                        if current_page == Page::Clock {
+                            app_state = AppState::Launcher;
+                        }
                     }
                 }
             }
 
+            #[cfg(feature = "snake")]
             AppState::Snake => {
+                #[cfg(feature = "audio")]
                 let prev_score = snake_game.score();
                 let input = AppInput {
                     touch: None,
@@ -1264,20 +1492,24 @@ async fn main(_spawner: Spawner) {
                             snake_game.render(&mut fb);
                             fb.flush(&mut display);
                             // Beep when food eaten via I2S DMA
-                            if snake_game.score() > prev_score {
-                                if ensure_audio!() {
-                                    if let (Some(codec), Some(tx), Some(buf)) =
-                                        (audio_codec.as_mut(), i2s_tx.as_mut(), beep_buf) {
-                                        // Unmute codec, then raise PA amplifier, then play
-                                        let _ = codec.unmute();
-                                        delay.delay_millis(2); // let codec stabilize before enabling amp
-                                        pa_en.set_high();
-                                        if let Ok(transfer) = tx.write_dma(buf) {
-                                            let _ = transfer.wait();
+                            #[cfg(feature = "audio")]
+                            {
+                                if snake_game.score() > prev_score {
+                                    if ensure_audio!() {
+                                        if let (Some(codec), Some(tx), Some(buf)) =
+                                            (audio_codec.as_mut(), i2s_tx.as_mut(), beep_buf)
+                                        {
+                                            // Unmute codec, then raise PA amplifier, then play
+                                            let _ = codec.unmute();
+                                            delay.delay_millis(2); // let codec stabilize before enabling amp
+                                            pa_en.set_high();
+                                            if let Ok(transfer) = tx.write_dma(buf) {
+                                                let _ = transfer.wait();
+                                            }
+                                            // Lower amp FIRST, then mute codec to avoid pop
+                                            pa_en.set_low();
+                                            let _ = codec.mute();
                                         }
-                                        // Lower amp FIRST, then mute codec to avoid pop
-                                        pa_en.set_low();
-                                        let _ = codec.mute();
                                     }
                                 }
                             }
@@ -1289,22 +1521,34 @@ async fn main(_spawner: Spawner) {
                         page_dirty = true;
                     }
                 }
-
             }
 
+            #[cfg(feature = "app-launcher")]
             AppState::Launcher => {
                 // Track touch Y for tap detection
                 if let Ok((point, _)) = touch.poll() {
-                    if let Some(tp) = point { last_touch_y = tp.y; }
+                    if let Some(tp) = point {
+                        last_touch_y = tp.y;
+                    }
                 }
                 if let Some(new_state) = launcher.update(swipe_event, tap_event, last_touch_y) {
                     app_state = new_state;
                     match app_state {
+                        #[cfg(feature = "snake")]
                         AppState::Snake => snake_game.setup(),
-                        AppState::Game2048 => { game_2048.setup(); game_2048.render(&mut fb); fb.flush(&mut display); }
+                        #[cfg(feature = "game-2048")]
+                        AppState::Game2048 => {
+                            game_2048.setup();
+                            game_2048.render(&mut fb);
+                            fb.flush(&mut display);
+                        }
+                        #[cfg(feature = "tetris")]
                         AppState::Tetris => tetris_game.setup(),
+                        #[cfg(feature = "flappy")]
                         AppState::Flappy => flappy_game.setup(),
+                        #[cfg(feature = "maze")]
                         AppState::Maze => maze_game.setup(),
+                        #[cfg(feature = "mp3-player")]
                         AppState::Mp3Player => {
                             ensure_mp3_scan!();
                             mp3_player.setup();
@@ -1313,9 +1557,14 @@ async fn main(_spawner: Spawner) {
                                 mp3_player.set_track_name(&mp3_files[0]);
                             }
                         }
+                        #[cfg(feature = "smart-home")]
                         AppState::SmartHome => smarthome_app.setup(),
+                        #[cfg(feature = "settings")]
                         AppState::Settings => {}
-                        AppState::Watchface => { watchface.force_redraw(); page_dirty = true; }
+                        AppState::Watchface => {
+                            watchface.force_redraw();
+                            page_dirty = true;
+                        }
                         _ => {}
                     }
                 } else {
@@ -1324,8 +1573,15 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
+            #[cfg(feature = "game-2048")]
             AppState::Game2048 => {
-                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                let input = AppInput {
+                    touch: None,
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
                 game_2048.update(&input);
                 // Only render on input (swipe moves tiles)
                 if swipe_event.is_some() {
@@ -1334,8 +1590,15 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
+            #[cfg(feature = "tetris")]
             AppState::Tetris => {
-                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                let input = AppInput {
+                    touch: None,
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
                 tetris_game.update(&input);
                 if tetris_game.stepped() || swipe_event.is_some() || tap_event {
                     tetris_game.render(&mut fb);
@@ -1343,11 +1606,26 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
+            #[cfg(feature = "flappy")]
             AppState::Flappy => {
                 // Touch via GPIO38 (instant)
                 let touch_down = touch_int.is_low();
-                let fake_touch = if touch_down { Some(crate::peripherals::touch::TouchPoint { x: 200, y: 250, fingers: 1 }) } else { None };
-                let input = AppInput { touch: fake_touch, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                let fake_touch = if touch_down {
+                    Some(crate::peripherals::touch::TouchPoint {
+                        x: 200,
+                        y: 250,
+                        fingers: 1,
+                    })
+                } else {
+                    None
+                };
+                let input = AppInput {
+                    touch: fake_touch,
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
                 flappy_game.update(&input);
                 // Double-buffered render: draw to fb, swap+flush with VSync
                 flappy_game.render(&mut fb);
@@ -1357,8 +1635,15 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
+            #[cfg(feature = "maze")]
             AppState::Maze => {
-                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                let input = AppInput {
+                    touch: None,
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
                 maze_game.update(&input);
                 // Maze renders at 30fps (IMU continuous)
                 if now >= next_watchface_flush {
@@ -1368,8 +1653,15 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
+            #[cfg(feature = "smart-home")]
             AppState::SmartHome => {
-                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                let input = AppInput {
+                    touch: None,
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
                 smarthome_app.update(&input);
                 // TODO: when get_pending_request() returns a URL, send HTTP request via embassy-net
                 // For now just show the UI
@@ -1380,8 +1672,15 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
+            #[cfg(feature = "mp3-player")]
             AppState::Mp3Player => {
-                let input = AppInput { touch: None, swipe: swipe_event, tap: tap_event, accel, dt_ms: dt_ms.max(1) };
+                let input = AppInput {
+                    touch: None,
+                    swipe: swipe_event,
+                    tap: tap_event,
+                    accel,
+                    dt_ms: dt_ms.max(1),
+                };
                 mp3_player.update(&input);
                 mp3_player.render(&mut fb);
                 if now >= next_watchface_flush {
@@ -1390,6 +1689,7 @@ async fn main(_spawner: Spawner) {
                 }
             }
 
+            #[cfg(feature = "settings")]
             AppState::Settings => {
                 settings_app.update(dt_ms.max(1));
                 // For T9: detect touch down via GPIO38 for rapid multi-tap
@@ -1407,7 +1707,6 @@ async fn main(_spawner: Spawner) {
                     next_watchface_flush = now + Duration::from_millis(50);
                 }
             }
-
         }
     }
 }

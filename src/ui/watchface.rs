@@ -30,9 +30,13 @@ const BALL_R: i32 = 8;
 const GYRO_FLUSH_PAD: i32 = 2;
 
 // BLE toggle switch geometry (above WiFi)
+#[cfg(feature = "ble")]
 const BLE_TOGGLE_X: i32 = 50;
+#[cfg(feature = "ble")]
 const BLE_TOGGLE_Y: i32 = 245;
+#[cfg(feature = "ble")]
 const BLE_TOGGLE_W: i32 = 56;
+#[cfg(feature = "ble")]
 const BLE_TOGGLE_H: i32 = 28;
 
 // WiFi toggle switch geometry (iOS-style pill)
@@ -55,9 +59,13 @@ const CPU_BTN_W: i32 = 72;
 const CPU_BTN_H: i32 = 28;
 
 // Apps button geometry (bottom center, replaces "100% Rust" footer)
+#[cfg(feature = "app-launcher")]
 const APPS_BTN_X: i32 = 130;
+#[cfg(feature = "app-launcher")]
 const APPS_BTN_Y: i32 = 450;
+#[cfg(feature = "app-launcher")]
 const APPS_BTN_W: i32 = 140;
+#[cfg(feature = "app-launcher")]
 const APPS_BTN_H: i32 = 32;
 
 #[derive(Clone, Copy, Debug)]
@@ -96,13 +104,26 @@ pub struct RenderOutcome {
 }
 
 pub struct WatchFace {
-    hours: u8, minutes: u8, seconds: u8,
-    battery_percent: u8, battery_voltage: u16, is_charging: bool,
-    accel_x: i16, accel_y: i16, accel_z: i16,
-    prev_ball_x: i32, prev_ball_y: i32,
-    day: u8, month: u8, year: u8,
-    full_redraw: bool, time_changed: bool, battery_changed: bool, gyro_changed: bool,
+    hours: u8,
+    minutes: u8,
+    seconds: u8,
+    battery_percent: u8,
+    battery_voltage: u16,
+    is_charging: bool,
+    accel_x: i16,
+    accel_y: i16,
+    accel_z: i16,
+    prev_ball_x: i32,
+    prev_ball_y: i32,
+    day: u8,
+    month: u8,
+    year: u8,
+    full_redraw: bool,
+    time_changed: bool,
+    battery_changed: bool,
+    gyro_changed: bool,
     pub wifi_connected: bool,
+    #[cfg(feature = "ble")]
     pub ble_on: bool,
     pub gyro_enabled: bool,
     /// Display brightness 0..255, controlled by the slider on the watchface.
@@ -115,29 +136,46 @@ pub struct WatchFace {
 impl WatchFace {
     pub fn new() -> Self {
         Self {
-            hours: 0, minutes: 0, seconds: 0,
-            battery_percent: 0, battery_voltage: 0, is_charging: false,
-            accel_x: 0, accel_y: 0, accel_z: 0,
-            prev_ball_x: GYRO_CX, prev_ball_y: GYRO_CY,
-            day: 6, month: 4, year: 26,
-            full_redraw: true, time_changed: false, battery_changed: false, gyro_changed: false,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+            battery_percent: 0,
+            battery_voltage: 0,
+            is_charging: false,
+            accel_x: 0,
+            accel_y: 0,
+            accel_z: 0,
+            prev_ball_x: GYRO_CX,
+            prev_ball_y: GYRO_CY,
+            day: 6,
+            month: 4,
+            year: 26,
+            full_redraw: true,
+            time_changed: false,
+            battery_changed: false,
+            gyro_changed: false,
             wifi_connected: false,
+            #[cfg(feature = "ble")]
             ble_on: false,
             gyro_enabled: false, // off by default to save battery
-            brightness: 0xA0,   // default ~63%
+            brightness: 0xA0,    // default ~63%
             cpu_mhz: 160,
         }
     }
 
     pub fn update_time(&mut self, h: u8, m: u8, s: u8) {
         if self.hours != h || self.minutes != m || self.seconds != s {
-            self.hours = h; self.minutes = m; self.seconds = s;
+            self.hours = h;
+            self.minutes = m;
+            self.seconds = s;
             self.time_changed = true;
         }
     }
 
     pub fn update_date(&mut self, day: u8, month: u8, year: u8) {
-        self.day = day; self.month = month; self.year = year;
+        self.day = day;
+        self.month = month;
+        self.year = year;
     }
 
     pub fn update_battery(&mut self, pct: u8, mv: u16, chg: bool) {
@@ -154,12 +192,16 @@ impl WatchFace {
         self.accel_y = (y * 100.0) as i16;
         self.accel_z = (z * 100.0) as i16;
         let (nx, ny) = Self::projected_ball_position(self.accel_x, self.accel_y);
-        if (nx - self.prev_ball_x).unsigned_abs() >= 2 || (ny - self.prev_ball_y).unsigned_abs() >= 2 {
+        if (nx - self.prev_ball_x).unsigned_abs() >= 2
+            || (ny - self.prev_ball_y).unsigned_abs() >= 2
+        {
             self.gyro_changed = true;
         }
     }
 
-    pub fn force_redraw(&mut self) { self.full_redraw = true; }
+    pub fn force_redraw(&mut self) {
+        self.full_redraw = true;
+    }
 
     /// Toggle gyroscope display. Returns new state.
     pub fn toggle_gyro(&mut self) -> bool {
@@ -232,6 +274,7 @@ impl WatchFace {
     }
 
     /// Draw a Bluetooth rune icon (~10x16 pixels) at (x, y).
+    #[cfg(feature = "ble")]
     fn draw_ble_icon<D: DrawTarget<Color = Rgb565>>(
         d: &mut D,
         x: i32,
@@ -271,10 +314,8 @@ impl WatchFace {
     }
 
     /// Draw the iOS-style BLE toggle pill (above WiFi).
-    fn draw_ble_toggle<D: DrawTarget<Color = Rgb565>>(
-        d: &mut D,
-        on: bool,
-    ) -> Result<(), D::Error> {
+    #[cfg(feature = "ble")]
+    fn draw_ble_toggle<D: DrawTarget<Color = Rgb565>>(d: &mut D, on: bool) -> Result<(), D::Error> {
         let x = BLE_TOGGLE_X;
         let y = BLE_TOGGLE_Y;
         let w = BLE_TOGGLE_W;
@@ -282,18 +323,23 @@ impl WatchFace {
         let r = h / 2;
         let kr = 10i32;
 
-        let track_color = if on { Rgb565::new(0, 16, 31) } else { Rgb565::new(6, 12, 6) }; // blue when on
+        let track_color = if on {
+            Rgb565::new(0, 16, 31)
+        } else {
+            Rgb565::new(6, 12, 6)
+        }; // blue when on
         RoundedRectangle::with_equal_corners(
             Rectangle::new(Point::new(x, y), Size::new(w as u32, h as u32)),
             Size::new(r as u32, r as u32),
-        ).into_styled(PrimitiveStyle::with_fill(track_color)).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(track_color))
+        .draw(d)?;
 
         let knob_cx = if on { x + w - r } else { x + r };
         let knob_cy = y + h / 2;
-        Circle::new(
-            Point::new(knob_cx - kr, knob_cy - kr),
-            (kr * 2) as u32,
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE)).draw(d)?;
+        Circle::new(Point::new(knob_cx - kr, knob_cy - kr), (kr * 2) as u32)
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+            .draw(d)?;
 
         let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
         Text::new("BLE", Point::new(x + 4, y - 4), dim).draw(d)?;
@@ -313,23 +359,27 @@ impl WatchFace {
         let r = h / 2;
 
         // Track (pill shape = rounded rectangle with half-height corners)
-        let track_color = if connected { Rgb565::GREEN } else { Rgb565::new(6, 12, 6) };
+        let track_color = if connected {
+            Rgb565::GREEN
+        } else {
+            Rgb565::new(6, 12, 6)
+        };
         RoundedRectangle::with_equal_corners(
             Rectangle::new(Point::new(x, y), Size::new(w as u32, h as u32)),
             Size::new(r as u32, r as u32),
-        ).into_styled(PrimitiveStyle::with_fill(track_color)).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(track_color))
+        .draw(d)?;
 
         // Knob (white circle, left when off, right when on)
-        let knob_cx = if connected {
-            x + w - r
-        } else {
-            x + r
-        };
+        let knob_cx = if connected { x + w - r } else { x + r };
         let knob_cy = y + h / 2;
         Circle::new(
             Point::new(knob_cx - WIFI_KNOB_R, knob_cy - WIFI_KNOB_R),
             (WIFI_KNOB_R * 2) as u32,
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE)).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+        .draw(d)?;
 
         // Label
         let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
@@ -339,15 +389,12 @@ impl WatchFace {
     }
 
     /// Draw the CPU frequency button with "CPU" label underneath.
-    fn draw_cpu_button<D: DrawTarget<Color = Rgb565>>(
-        d: &mut D,
-        mhz: u16,
-    ) -> Result<(), D::Error> {
+    fn draw_cpu_button<D: DrawTarget<Color = Rgb565>>(d: &mut D, mhz: u16) -> Result<(), D::Error> {
         // Rounded pill button
         let color = match mhz {
-            80 => Rgb565::new(0, 12, 4),   // greenish = eco
-            240 => Rgb565::new(15, 6, 0),  // orange = performance
-            _ => Rgb565::new(4, 8, 12),    // blue = balanced
+            80 => Rgb565::new(0, 12, 4),  // greenish = eco
+            240 => Rgb565::new(15, 6, 0), // orange = performance
+            _ => Rgb565::new(4, 8, 12),   // blue = balanced
         };
         RoundedRectangle::with_equal_corners(
             Rectangle::new(
@@ -355,7 +402,9 @@ impl WatchFace {
                 Size::new(CPU_BTN_W as u32, CPU_BTN_H as u32),
             ),
             Size::new(8, 8),
-        ).into_styled(PrimitiveStyle::with_fill(color)).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(color))
+        .draw(d)?;
 
         // Text: "80M" / "160M" / "240M"
         let mut buf = [0u8; 5];
@@ -366,7 +415,8 @@ impl WatchFace {
             Point::new(CPU_BTN_X + CPU_BTN_W / 2, CPU_BTN_Y + 20),
             ts,
             Alignment::Center,
-        ).draw(d)?;
+        )
+        .draw(d)?;
 
         // "CPU" label below button
         let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
@@ -375,11 +425,13 @@ impl WatchFace {
             Point::new(CPU_BTN_X + CPU_BTN_W / 2, CPU_BTN_Y + CPU_BTN_H + 16),
             dim,
             Alignment::Center,
-        ).draw(d)?;
+        )
+        .draw(d)?;
         Ok(())
     }
 
     /// Draw the Apps launcher button (bottom center).
+    #[cfg(feature = "app-launcher")]
     fn draw_apps_button<D: DrawTarget<Color = Rgb565>>(d: &mut D) -> Result<(), D::Error> {
         RoundedRectangle::with_equal_corners(
             Rectangle::new(
@@ -387,7 +439,9 @@ impl WatchFace {
                 Size::new(APPS_BTN_W as u32, APPS_BTN_H as u32),
             ),
             Size::new(12, 12),
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 14))).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 14)))
+        .draw(d)?;
 
         let ts = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
         Text::with_alignment(
@@ -395,32 +449,41 @@ impl WatchFace {
             Point::new(APPS_BTN_X + APPS_BTN_W / 2, APPS_BTN_Y + 24),
             ts,
             Alignment::Center,
-        ).draw(d)?;
+        )
+        .draw(d)?;
         Ok(())
     }
 
     /// Hit-test for the BLE toggle switch.
+    #[cfg(feature = "ble")]
     pub fn is_ble_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= BLE_TOGGLE_X - 10 && xi <= BLE_TOGGLE_X + BLE_TOGGLE_W + 10
-            && yi >= BLE_TOGGLE_Y - 10 && yi <= BLE_TOGGLE_Y + BLE_TOGGLE_H + 10
+        xi >= BLE_TOGGLE_X - 10
+            && xi <= BLE_TOGGLE_X + BLE_TOGGLE_W + 10
+            && yi >= BLE_TOGGLE_Y - 10
+            && yi <= BLE_TOGGLE_Y + BLE_TOGGLE_H + 10
     }
 
     /// Hit-test for the CPU frequency button.
     pub fn is_cpu_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= CPU_BTN_X - 8 && xi <= CPU_BTN_X + CPU_BTN_W + 8
-            && yi >= CPU_BTN_Y - 8 && yi <= CPU_BTN_Y + CPU_BTN_H + 8
+        xi >= CPU_BTN_X - 8
+            && xi <= CPU_BTN_X + CPU_BTN_W + 8
+            && yi >= CPU_BTN_Y - 8
+            && yi <= CPU_BTN_Y + CPU_BTN_H + 8
     }
 
     /// Hit-test for the Apps button.
+    #[cfg(feature = "app-launcher")]
     pub fn is_apps_zone(x: u16, y: u16) -> bool {
         let xi = x as i32;
         let yi = y as i32;
-        xi >= APPS_BTN_X - 8 && xi <= APPS_BTN_X + APPS_BTN_W + 8
-            && yi >= APPS_BTN_Y - 8 && yi <= APPS_BTN_Y + APPS_BTN_H + 8
+        xi >= APPS_BTN_X - 8
+            && xi <= APPS_BTN_X + APPS_BTN_W + 8
+            && yi >= APPS_BTN_Y - 8
+            && yi <= APPS_BTN_Y + APPS_BTN_H + 8
     }
 
     /// Cycle CPU frequency: 80 → 160 → 240 → 80.
@@ -452,7 +515,9 @@ impl WatchFace {
         RoundedRectangle::with_equal_corners(
             Rectangle::new(Point::new(x, y), Size::new(w as u32, h as u32)),
             Size::new((h / 2) as u32, (h / 2) as u32),
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::new(3, 6, 3))).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(3, 6, 3)))
+        .draw(d)?;
 
         // Filled portion (proportional to brightness)
         let fill_w = ((brightness as i32 - 0x10).max(0) * w / (0xFF - 0x10)) as u32;
@@ -465,17 +530,18 @@ impl WatchFace {
             RoundedRectangle::with_equal_corners(
                 Rectangle::new(Point::new(x, y), Size::new(fill_w.min(w as u32), h as u32)),
                 Size::new((h / 2) as u32, (h / 2) as u32),
-            ).into_styled(PrimitiveStyle::with_fill(fill_color)).draw(d)?;
+            )
+            .into_styled(PrimitiveStyle::with_fill(fill_color))
+            .draw(d)?;
         }
 
         // Thumb knob
         let knob_x = x + fill_w as i32;
         let knob_cy = y + h / 2;
         let kr = h / 2 + 2;
-        Circle::new(
-            Point::new(knob_x - kr, knob_cy - kr),
-            (kr * 2) as u32,
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE)).draw(d)?;
+        Circle::new(Point::new(knob_x - kr, knob_cy - kr), (kr * 2) as u32)
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::WHITE))
+            .draw(d)?;
 
         Ok(())
     }
@@ -520,7 +586,15 @@ impl WatchFace {
 
         // Draw HH:MM using the segment renderer. Pass 99 for seconds to indicate "skip seconds".
         // The segments::draw_time function draws all 8 chars; we'll use a custom call.
-        segments::draw_hhmm(d, cx, cy, self.hours, self.minutes, dim_white, Rgb565::BLACK)?;
+        segments::draw_hhmm(
+            d,
+            cx,
+            cy,
+            self.hours,
+            self.minutes,
+            dim_white,
+            Rgb565::BLACK,
+        )?;
 
         // Tiny battery indicator at the bottom (3 chars max: "99%")
         let mut buf = [0u8; 4];
@@ -536,7 +610,10 @@ impl WatchFace {
         Ok(())
     }
 
-    pub fn render<D: DrawTarget<Color = Rgb565>>(&mut self, d: &mut D) -> Result<RenderOutcome, D::Error> {
+    pub fn render<D: DrawTarget<Color = Rgb565>>(
+        &mut self,
+        d: &mut D,
+    ) -> Result<RenderOutcome, D::Error> {
         if !self.full_redraw && !self.time_changed && !self.battery_changed && !self.gyro_changed {
             return Ok(RenderOutcome::default());
         }
@@ -559,13 +636,16 @@ impl WatchFace {
             if self.wifi_connected {
                 Self::draw_wifi_icon(d, 72, 10, Rgb565::GREEN)?;
             }
-            // BLE icon: rune-style "B" shape
-            if self.ble_on {
-                Self::draw_ble_icon(d, 96, 10, Rgb565::new(0, 16, 31))?;
-            }
+            #[cfg(feature = "ble")]
+            {
+                // BLE icon: rune-style "B" shape
+                if self.ble_on {
+                    Self::draw_ble_icon(d, 96, 10, Rgb565::new(0, 16, 31))?;
+                }
 
-            // === BLE toggle (above WiFi) ===
-            Self::draw_ble_toggle(d, self.ble_on)?;
+                // === BLE toggle (above WiFi) ===
+                Self::draw_ble_toggle(d, self.ble_on)?;
+            }
 
             // === WiFi toggle switch (iOS-style pill) ===
             Self::draw_wifi_toggle(d, self.wifi_connected)?;
@@ -577,11 +657,20 @@ impl WatchFace {
             Self::draw_brightness_slider(d, self.brightness)?;
 
             // Title
-            Text::with_alignment("RUST WATCH", Point::new(cx, 38), cyan, Alignment::Center).draw(d)?;
+            Text::with_alignment("RUST WATCH", Point::new(cx, 38), cyan, Alignment::Center)
+                .draw(d)?;
 
             // Time (y=60, 64px tall, ends at y=124)
-            segments::draw_time(d, cx, TIME_Y, self.hours, self.minutes, self.seconds,
-                Rgb565::WHITE, Rgb565::BLACK)?;
+            segments::draw_time(
+                d,
+                cx,
+                TIME_Y,
+                self.hours,
+                self.minutes,
+                self.seconds,
+                Rgb565::WHITE,
+                Rgb565::BLACK,
+            )?;
 
             // Date FR under time
             let mut date_buf = [0u8; 12];
@@ -593,17 +682,35 @@ impl WatchFace {
 
             // Gyro section (only when enabled)
             if self.gyro_enabled {
-                Circle::new(Point::new(GYRO_CX - GYRO_R, GYRO_CY - GYRO_R), (GYRO_R * 2) as u32)
-                    .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_DARK_GRAY, 2))
-                    .draw(d)?;
-                Text::with_alignment("GYRO", Point::new(GYRO_CX, GYRO_CY + GYRO_R + 20), dim, Alignment::Center).draw(d)?;
+                Circle::new(
+                    Point::new(GYRO_CX - GYRO_R, GYRO_CY - GYRO_R),
+                    (GYRO_R * 2) as u32,
+                )
+                .into_styled(PrimitiveStyle::with_stroke(Rgb565::CSS_DARK_GRAY, 2))
+                .draw(d)?;
+                Text::with_alignment(
+                    "GYRO",
+                    Point::new(GYRO_CX, GYRO_CY + GYRO_R + 20),
+                    dim,
+                    Alignment::Center,
+                )
+                .draw(d)?;
                 self.draw_gyro_ball(d)?;
             } else {
-                Text::with_alignment("TAP FOR GYRO", Point::new(GYRO_CX, GYRO_CY + GYRO_R + 20), dim, Alignment::Center).draw(d)?;
+                Text::with_alignment(
+                    "TAP FOR GYRO",
+                    Point::new(GYRO_CX, GYRO_CY + GYRO_R + 20),
+                    dim,
+                    Alignment::Center,
+                )
+                .draw(d)?;
             }
 
             // Apps button (bottom center)
-            Self::draw_apps_button(d)?;
+            #[cfg(feature = "app-launcher")]
+            {
+                Self::draw_apps_button(d)?;
+            }
 
             self.full_redraw = false;
             self.time_changed = false;
@@ -624,16 +731,30 @@ impl WatchFace {
             )
             .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
             .draw(d)?;
-            segments::draw_time(d, cx, TIME_Y, self.hours, self.minutes, self.seconds,
-                Rgb565::WHITE, Rgb565::BLACK)?;
+            segments::draw_time(
+                d,
+                cx,
+                TIME_Y,
+                self.hours,
+                self.minutes,
+                self.seconds,
+                Rgb565::WHITE,
+                Rgb565::BLACK,
+            )?;
             self.time_changed = false;
             outcome.time_region = Some(Self::time_region());
         }
 
         if self.battery_changed {
             Rectangle::new(
-                Point::new(Self::battery_region().x as i32, Self::battery_region().y as i32),
-                Size::new(Self::battery_region().w as u32, Self::battery_region().h as u32),
+                Point::new(
+                    Self::battery_region().x as i32,
+                    Self::battery_region().y as i32,
+                ),
+                Size::new(
+                    Self::battery_region().w as u32,
+                    Self::battery_region().h as u32,
+                ),
             )
             .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
             .draw(d)?;
@@ -650,10 +771,14 @@ impl WatchFace {
         Ok(outcome)
     }
 
-    fn draw_gyro_ball<D: DrawTarget<Color = Rgb565>>(&mut self, d: &mut D) -> Result<Option<FlushRegion>, D::Error> {
+    fn draw_gyro_ball<D: DrawTarget<Color = Rgb565>>(
+        &mut self,
+        d: &mut D,
+    ) -> Result<Option<FlushRegion>, D::Error> {
         let (nx, ny) = Self::projected_ball_position(self.accel_x, self.accel_y);
 
-        if (nx - self.prev_ball_x).unsigned_abs() < 2 && (ny - self.prev_ball_y).unsigned_abs() < 2 {
+        if (nx - self.prev_ball_x).unsigned_abs() < 2 && (ny - self.prev_ball_y).unsigned_abs() < 2
+        {
             return Ok(None);
         }
 
@@ -661,37 +786,58 @@ impl WatchFace {
         Rectangle::new(
             Point::new(self.prev_ball_x - BALL_R, self.prev_ball_y - BALL_R),
             Size::new(BALL_R as u32 * 2, BALL_R as u32 * 2),
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK)).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(d)?;
 
         // Draw new
         Rectangle::new(
             Point::new(nx - BALL_R, ny - BALL_R),
             Size::new(BALL_R as u32 * 2, BALL_R as u32 * 2),
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::GREEN)).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::GREEN))
+        .draw(d)?;
 
-        let dirty = Self::ball_region(self.prev_ball_x, self.prev_ball_y)
-            .union(Self::ball_region(nx, ny));
+        let dirty =
+            Self::ball_region(self.prev_ball_x, self.prev_ball_y).union(Self::ball_region(nx, ny));
         self.prev_ball_x = nx;
         self.prev_ball_y = ny;
         Ok(Some(dirty))
     }
 
-    fn draw_battery<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D, cx: i32, y: i32) -> Result<(), D::Error> {
-        let bw = 200i32; let bh = 20i32; let bx = cx - bw/2;
+    fn draw_battery<D: DrawTarget<Color = Rgb565>>(
+        &self,
+        d: &mut D,
+        cx: i32,
+        y: i32,
+    ) -> Result<(), D::Error> {
+        let bw = 200i32;
+        let bh = 20i32;
+        let bx = cx - bw / 2;
 
         RoundedRectangle::with_equal_corners(
             Rectangle::new(Point::new(bx, y), Size::new(bw as u32, bh as u32)),
             Size::new(4, 4),
-        ).into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2)).draw(d)?;
+        )
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 2))
+        .draw(d)?;
 
         let fw = ((self.battery_percent as i32).min(100) * (bw - 6)) / 100;
-        let fc = if self.battery_percent > 50 { Rgb565::GREEN }
-            else if self.battery_percent > 20 { Rgb565::YELLOW }
-            else { Rgb565::RED };
+        let fc = if self.battery_percent > 50 {
+            Rgb565::GREEN
+        } else if self.battery_percent > 20 {
+            Rgb565::YELLOW
+        } else {
+            Rgb565::RED
+        };
 
         if fw > 0 {
-            Rectangle::new(Point::new(bx+3, y+3), Size::new(fw as u32, (bh-6) as u32))
-                .into_styled(PrimitiveStyle::with_fill(fc)).draw(d)?;
+            Rectangle::new(
+                Point::new(bx + 3, y + 3),
+                Size::new(fw as u32, (bh - 6) as u32),
+            )
+            .into_styled(PrimitiveStyle::with_fill(fc))
+            .draw(d)?;
         }
 
         let mut buf = [0u8; 16];
@@ -743,55 +889,111 @@ impl WatchFace {
 fn fmt_mhz_short<'a>(buf: &'a mut [u8; 5], mhz: u16) -> &'a str {
     let mut p = 0;
     if mhz >= 100 {
-        buf[p] = b'0' + (mhz / 100) as u8; p += 1;
+        buf[p] = b'0' + (mhz / 100) as u8;
+        p += 1;
     }
-    buf[p] = b'0' + ((mhz / 10) % 10) as u8; p += 1;
-    buf[p] = b'0' + (mhz % 10) as u8; p += 1;
-    buf[p] = b'M'; p += 1;
+    buf[p] = b'0' + ((mhz / 10) % 10) as u8;
+    p += 1;
+    buf[p] = b'0' + (mhz % 10) as u8;
+    p += 1;
+    buf[p] = b'M';
+    p += 1;
     core::str::from_utf8(&buf[..p]).unwrap_or("?M")
 }
 
 fn fmt_date_fr<'a>(buf: &'a mut [u8; 12], d: u8, m: u8, y: u8) -> &'a str {
     // Format: "DD/MM/20YY"
     let mut p = 0;
-    buf[p] = b'0' + d / 10; p += 1;
-    buf[p] = b'0' + d % 10; p += 1;
-    buf[p] = b'/'; p += 1;
-    buf[p] = b'0' + m / 10; p += 1;
-    buf[p] = b'0' + m % 10; p += 1;
-    buf[p] = b'/'; p += 1;
-    buf[p] = b'2'; p += 1;
-    buf[p] = b'0'; p += 1;
-    buf[p] = b'0' + y / 10; p += 1;
-    buf[p] = b'0' + y % 10; p += 1;
+    buf[p] = b'0' + d / 10;
+    p += 1;
+    buf[p] = b'0' + d % 10;
+    p += 1;
+    buf[p] = b'/';
+    p += 1;
+    buf[p] = b'0' + m / 10;
+    p += 1;
+    buf[p] = b'0' + m % 10;
+    p += 1;
+    buf[p] = b'/';
+    p += 1;
+    buf[p] = b'2';
+    p += 1;
+    buf[p] = b'0';
+    p += 1;
+    buf[p] = b'0' + y / 10;
+    p += 1;
+    buf[p] = b'0' + y % 10;
+    p += 1;
     core::str::from_utf8(&buf[..p]).unwrap_or("??/??/????")
 }
 
 fn fmt_batt<'a>(buf: &'a mut [u8; 16], pct: u8, chg: bool) -> &'a str {
     let mut p = 0;
-    if pct >= 100 { buf[p]=b'1'; p+=1; buf[p]=b'0'; p+=1; buf[p]=b'0'; p+=1; }
-    else if pct >= 10 { buf[p]=b'0'+pct/10; p+=1; buf[p]=b'0'+pct%10; p+=1; }
-    else { buf[p]=b'0'+pct; p+=1; }
-    buf[p]=b'%'; p+=1;
-    if chg { for &c in b" CHG" { buf[p]=c; p+=1; } }
+    if pct >= 100 {
+        buf[p] = b'1';
+        p += 1;
+        buf[p] = b'0';
+        p += 1;
+        buf[p] = b'0';
+        p += 1;
+    } else if pct >= 10 {
+        buf[p] = b'0' + pct / 10;
+        p += 1;
+        buf[p] = b'0' + pct % 10;
+        p += 1;
+    } else {
+        buf[p] = b'0' + pct;
+        p += 1;
+    }
+    buf[p] = b'%';
+    p += 1;
+    if chg {
+        for &c in b" CHG" {
+            buf[p] = c;
+            p += 1;
+        }
+    }
     core::str::from_utf8(&buf[..p]).unwrap_or("?%")
 }
 
 fn fmt_bat_short<'a>(buf: &'a mut [u8; 4], pct: u8) -> &'a str {
     let mut p = 0;
-    if pct >= 100 { buf[p]=b'1'; p+=1; buf[p]=b'0'; p+=1; buf[p]=b'0'; p+=1; }
-    else if pct >= 10 { buf[p]=b'0'+pct/10; p+=1; buf[p]=b'0'+pct%10; p+=1; }
-    else { buf[p]=b'0'+pct; p+=1; }
-    buf[p]=b'%'; p+=1;
+    if pct >= 100 {
+        buf[p] = b'1';
+        p += 1;
+        buf[p] = b'0';
+        p += 1;
+        buf[p] = b'0';
+        p += 1;
+    } else if pct >= 10 {
+        buf[p] = b'0' + pct / 10;
+        p += 1;
+        buf[p] = b'0' + pct % 10;
+        p += 1;
+    } else {
+        buf[p] = b'0' + pct;
+        p += 1;
+    }
+    buf[p] = b'%';
+    p += 1;
     core::str::from_utf8(&buf[..p]).unwrap_or("?%")
 }
 
 fn fmt_mv<'a>(buf: &'a mut [u8; 12], mv: u16) -> &'a str {
     let mut p = 0;
-    if mv >= 1000 { buf[p]=b'0'+(mv/1000) as u8; p+=1; }
-    buf[p]=b'0'+((mv/100)%10) as u8; p+=1;
-    buf[p]=b'0'+((mv/10)%10) as u8; p+=1;
-    buf[p]=b'0'+(mv%10) as u8; p+=1;
-    for &c in b"mV" { buf[p]=c; p+=1; }
+    if mv >= 1000 {
+        buf[p] = b'0' + (mv / 1000) as u8;
+        p += 1;
+    }
+    buf[p] = b'0' + ((mv / 100) % 10) as u8;
+    p += 1;
+    buf[p] = b'0' + ((mv / 10) % 10) as u8;
+    p += 1;
+    buf[p] = b'0' + (mv % 10) as u8;
+    p += 1;
+    for &c in b"mV" {
+        buf[p] = c;
+        p += 1;
+    }
     core::str::from_utf8(&buf[..p]).unwrap_or("????mV")
 }

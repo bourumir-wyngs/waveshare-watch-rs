@@ -281,7 +281,26 @@ $env:WIFI_PASS = "MyPassword"
 WIFI_SSID="MyNetwork" WIFI_PASS="MyPassword" cargo build --release
 ```
 
-The final binary is around **579 KB** (full firmware with WiFi stack + games + UI).
+By default this builds the core watch firmware with the watchface, sensors, power
+management, display, touch, RTC, IMU, and WiFi radio support. Apps are disabled
+unless selected with Cargo features.
+
+Useful feature combinations:
+
+```bash
+# Core firmware, no apps
+cargo build --release --no-default-features
+
+# One or more selected apps
+cargo build --release --no-default-features --features "snake tetris"
+
+# All apps, plus BLE and Snake audio beep support
+cargo build --release --no-default-features --features "apps ble audio"
+```
+
+Available app features: `snake`, `game-2048`, `tetris`, `flappy`, `maze`,
+`settings`, `mp3-player`, `smart-home`. Optional helper features: `ble`,
+`audio`, `sdcard`, `http`. The `apps` feature enables every app.
 
 ### Flash + serial monitor
 

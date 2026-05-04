@@ -53,6 +53,14 @@ Verify toolchain:
 ` . "`HOME/export-esp.sh"
 ` cargo build --release
 
+Default build includes the core watch firmware and no apps. Enable apps explicitly:
+
+` cargo build --release --no-default-features --features "snake tetris"
+
+Full app build:
+
+` cargo build --release --no-default-features --features "apps ble audio"
+
 Output binary:
 
 ` target/xtensa-esp32s3-none-elf/release/waveshare-watch-rs

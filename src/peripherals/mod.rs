@@ -3,9 +3,14 @@ pub mod power_stats;
 pub mod touch;
 pub mod rtc;
 pub mod imu;
+#[cfg(feature = "settings")]
 pub mod wifi;
+#[cfg(feature = "audio")]
 pub mod audio;
+#[cfg(feature = "sdcard")]
 pub mod sdcard;
+#[cfg(feature = "http")]
 pub mod http;
 pub mod cpu_clock;
+#[cfg(feature = "ble")]
 pub mod ble;
