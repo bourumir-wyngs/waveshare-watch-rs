@@ -81,3 +81,19 @@ pub fn draw_hhmm<D: DrawTarget<Color = Rgb565>>(
     draw_digit(d, x, y, m/10, dw, dh, t, color, bg)?; x += dw+gap;
     draw_digit(d, x, y, m%10, dw, dh, t, color, bg)
 }
+
+/// Draw HH:MM at half AOD size.
+pub fn draw_hhmm_half<D: DrawTarget<Color = Rgb565>>(
+    d: &mut D, center_x: i32, y: i32,
+    h: u8, m: u8, color: Rgb565, bg: Rgb565,
+) -> Result<(), D::Error> {
+    let dw = 28; let dh = 48; let t = 4; let gap = 4; let cw = 9;
+    let total = 4*dw + cw + 5*gap;
+    let mut x = center_x - total/2;
+
+    draw_digit(d, x, y, h/10, dw, dh, t, color, bg)?; x += dw+gap;
+    draw_digit(d, x, y, h%10, dw, dh, t, color, bg)?; x += dw+gap;
+    draw_colon(d, x+cw/2-t/2, y, dh, t, color)?; x += cw+gap;
+    draw_digit(d, x, y, m/10, dw, dh, t, color, bg)?; x += dw+gap;
+    draw_digit(d, x, y, m%10, dw, dh, t, color, bg)
+}

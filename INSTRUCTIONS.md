@@ -53,7 +53,8 @@ Verify toolchain:
 ` . "`HOME/export-esp.sh"
 ` cargo build --release
 
-Default build includes the core watch firmware and no apps. Enable apps explicitly:
+Default build includes the core watch firmware, scheduler wake beep, and no apps.
+Enable apps explicitly:
 
 ` cargo build --release --no-default-features --features "snake tetris"
 

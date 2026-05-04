@@ -288,7 +288,10 @@ unless selected with Cargo features.
 Useful feature combinations:
 
 ```bash
-# Core firmware, no apps
+# Core firmware, no apps, with scheduler wake beep
+cargo build --release
+
+# Core firmware without audio
 cargo build --release --no-default-features
 
 # One or more selected apps
@@ -299,8 +302,9 @@ cargo build --release --no-default-features --features "apps ble audio"
 ```
 
 Available app features: `snake`, `game-2048`, `tetris`, `flappy`, `maze`,
-`settings`, `mp3-player`, `smart-home`. Optional helper features: `ble`,
-`audio`, `sdcard`, `http`. The `apps` feature enables every app.
+`settings`, `mp3-player`, `smart-home`. Helper features: `audio`, `ble`,
+`sdcard`, `http`. The `apps` feature enables every app; `audio` is enabled by
+default for the scheduler wake beep.
 
 ### Flash + serial monitor
 

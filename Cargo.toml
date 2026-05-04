@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [features]
-default = []
+default = ["audio"]
 
 # Convenience feature for a full app launcher build.
 apps = [
@@ -60,6 +60,9 @@ embedded-graphics-core = "0.4"
 # HAL traits
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
+
+# Local scheduling logic
+time_manager = { path = "crates/time_manager" }
 
 # WiFi / Networking
 esp-radio = { version = "0.17.0", features = ["esp32s3", "wifi", "unstable", "log-04"] }

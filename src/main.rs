@@ -3,11 +3,11 @@
 
 extern crate alloc;
 
+mod apps;
 mod board;
 mod drivers;
 mod peripherals;
 mod ui;
-mod apps;
 
 use core::cell::RefCell;
 
@@ -27,11 +27,13 @@ use esp_hal::dma_buffers;
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::rtc_cntl::{
-    sleep::{Ext0WakeupSource, WakeupLevel},
+    sleep::{Ext0WakeupSource, TimerWakeupSource, WakeupLevel},
+    wakeup_cause,
     Rtc as EspRtc,
 };
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
+use esp_hal::system::SleepSource;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
@@ -194,6 +196,39 @@ fn days_to_date(days_since_epoch: i32) -> (u32, u32, u32) {
     (y as u32, (m + 1) as u32, (remaining + 1) as u32)
 }
 
+fn rtc_to_time_manager_datetime(dt: crate::peripherals::rtc::DateTime) -> time_manager::DateTime {
+    time_manager::DateTime::new(
+        2000 + dt.year as i32,
+        dt.month,
+        dt.day,
+        dt.hours,
+        dt.minutes,
+        dt.seconds,
+    )
+}
+
+fn aod_next_wake_time(dt: crate::peripherals::rtc::DateTime) -> Option<(u8, u8)> {
+    const MAX_AOD_WAKE_SECS: u64 = 24 * 60 * 60;
+
+    let now = rtc_to_time_manager_datetime(dt);
+    match time_manager::next_wake(now, &time_manager::schedule::WAKE_SCHEDULE) {
+        Ok(Some(wake)) if wake.duration.as_secs() <= MAX_AOD_WAKE_SECS => {
+            Some((wake.hour, wake.minute))
+        }
+        _ => None,
+    }
+}
+
+fn aod_near_scheduled_time(dt: crate::peripherals::rtc::DateTime) -> bool {
+    const AOD_ALERT_WINDOW_SECS: u64 = 2 * 60;
+
+    let now = rtc_to_time_manager_datetime(dt);
+    match time_manager::closest_wake(now, &time_manager::schedule::WAKE_SCHEDULE) {
+        Ok(Some(wake)) => wake.difference.as_secs() < AOD_ALERT_WINDOW_SECS,
+        _ => false,
+    }
+}
+
 fn app_needs_motion_imu(app_state: AppState) -> bool {
     match app_state {
         #[cfg(feature = "maze")]
@@ -278,6 +313,9 @@ async fn main(_spawner: Spawner) {
 
     let delay = Delay::new();
     let mut esp_rtc = EspRtc::new(peripherals.LPWR);
+    let boot_wakeup_cause = wakeup_cause();
+    let woke_from_timer = matches!(boot_wakeup_cause, SleepSource::Timer);
+    println!("[POWER] Wake cause: {:?}", boot_wakeup_cause);
 
     // === I2C Bus ===
     let i2c = I2c::new(
@@ -395,6 +433,8 @@ async fn main(_spawner: Spawner) {
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year);
+        watchface.update_next_wake_time(aod_next_wake_time(dt));
+        watchface.update_aod_time_alert(aod_near_scheduled_time(dt));
         aod_last_minute = dt.minutes;
     }
     display.set_brightness(AOD_BRIGHTNESS);
@@ -612,6 +652,38 @@ async fn main(_spawner: Spawner) {
 
             audio_codec.is_some() && i2s_tx.is_some()
         }};
+    }
+
+    #[cfg(feature = "audio")]
+    macro_rules! play_beep {
+        ($label:expr) => {{
+            if ensure_audio!() {
+                if let (Some(codec), Some(tx), Some(buf)) =
+                    (audio_codec.as_mut(), i2s_tx.as_mut(), beep_buf)
+                {
+                    println!("[AUDIO] {}", $label);
+                    let _ = codec.unmute();
+                    delay.delay_millis(2);
+                    pa_en.set_high();
+                    if let Ok(transfer) = tx.write_dma(buf) {
+                        let _ = transfer.wait();
+                    }
+                    pa_en.set_low();
+                    let _ = codec.mute();
+                }
+            } else {
+                println!("[AUDIO] Beep skipped; audio unavailable");
+            }
+        }};
+    }
+
+    #[cfg(feature = "audio")]
+    if woke_from_timer {
+        play_beep!("scheduler timer wake beep");
+    }
+    #[cfg(not(feature = "audio"))]
+    if woke_from_timer {
+        println!("[AUDIO] Scheduler timer wake beep skipped; audio feature disabled");
     }
 
     // === Lazy radio/network ===
@@ -870,6 +942,33 @@ async fn main(_spawner: Spawner) {
         if let Some(reason) = low_power_reason {
             println!("[POWER] Entering low power mode ({})", reason);
 
+            let scheduled_wake = match rtc.get_time() {
+                Ok(dt) => {
+                    let now = rtc_to_time_manager_datetime(dt);
+                    match time_manager::sleep_duration_until_next(
+                        now,
+                        &time_manager::schedule::WAKE_SCHEDULE,
+                    ) {
+                        Ok(Some(duration)) => {
+                            println!("[POWER] nest wake up in {}s", duration.as_secs());
+                            Some(duration)
+                        }
+                        Ok(None) => {
+                            println!("[POWER] nest wake up: no scheduled times");
+                            None
+                        }
+                        Err(err) => {
+                            println!("[POWER] nest wake up: schedule error {:?}", err);
+                            None
+                        }
+                    }
+                }
+                Err(_) => {
+                    println!("[POWER] nest wake up: RTC read failed");
+                    None
+                }
+            };
+
             if wifi_connected {
                 if let Some(controller) = wifi_controller.as_mut() {
                     let _ = embassy_time::with_timeout(
@@ -907,12 +1006,21 @@ async fn main(_spawner: Spawner) {
             touch_rst.set_low();
             display.set_brightness(0x00);
             display.display_off();
-            println!("[POWER] Deep sleep armed; wake source: BOOT/GPIO0 low");
+            if scheduled_wake.is_some() {
+                println!("[POWER] Deep sleep armed; wake sources: BOOT/GPIO0 low + timer");
+            } else {
+                println!("[POWER] Deep sleep armed; wake source: BOOT/GPIO0 low");
+            }
             Timer::after(Duration::from_millis(50)).await;
 
             drop(boot_button);
             let boot_wake = Ext0WakeupSource::new(boot_pin, WakeupLevel::Low);
-            esp_rtc.sleep_deep(&[&boot_wake]);
+            if let Some(duration) = scheduled_wake {
+                let timer_wake = TimerWakeupSource::new(duration);
+                esp_rtc.sleep_deep(&[&boot_wake, &timer_wake]);
+            } else {
+                esp_rtc.sleep_deep(&[&boot_wake]);
+            }
         }
 
         // === Sensors (gated by need + screen state) ===
@@ -1267,6 +1375,8 @@ async fn main(_spawner: Spawner) {
                 if dt.minutes != aod_last_minute {
                     aod_last_minute = dt.minutes;
                     watchface.update_time(dt.hours, dt.minutes, dt.seconds);
+                    watchface.update_next_wake_time(aod_next_wake_time(dt));
+                    watchface.update_aod_time_alert(aod_near_scheduled_time(dt));
                     if let Ok(pct) = power.get_battery_percent() {
                         watchface.update_battery(pct, batt_mv, charging);
                     }
@@ -1329,6 +1439,8 @@ async fn main(_spawner: Spawner) {
                             if dt.minutes != aod_last_minute {
                                 aod_last_minute = dt.minutes;
                                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
+                                watchface.update_next_wake_time(aod_next_wake_time(dt));
+                                watchface.update_aod_time_alert(aod_near_scheduled_time(dt));
                                 if let Ok(pct) = power.get_battery_percent() {
                                     watchface.update_battery(pct, batt_mv, charging);
                                 }
@@ -1495,22 +1607,7 @@ async fn main(_spawner: Spawner) {
                             #[cfg(feature = "audio")]
                             {
                                 if snake_game.score() > prev_score {
-                                    if ensure_audio!() {
-                                        if let (Some(codec), Some(tx), Some(buf)) =
-                                            (audio_codec.as_mut(), i2s_tx.as_mut(), beep_buf)
-                                        {
-                                            // Unmute codec, then raise PA amplifier, then play
-                                            let _ = codec.unmute();
-                                            delay.delay_millis(2); // let codec stabilize before enabling amp
-                                            pa_en.set_high();
-                                            if let Ok(transfer) = tx.write_dma(buf) {
-                                                let _ = transfer.wait();
-                                            }
-                                            // Lower amp FIRST, then mute codec to avoid pop
-                                            pa_en.set_low();
-                                            let _ = codec.mute();
-                                        }
-                                    }
+                                    play_beep!("snake food beep");
                                 }
                             }
                         }

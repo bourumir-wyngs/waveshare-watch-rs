@@ -1,6 +1,6 @@
 // Watchface - renders to any DrawTarget (framebuffer or display)
 
-use embedded_graphics::mono_font::ascii::FONT_10X20;
+use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_9X18_BOLD};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -118,6 +118,8 @@ pub struct WatchFace {
     day: u8,
     month: u8,
     year: u8,
+    next_wake_time: Option<(u8, u8)>,
+    aod_time_alert: bool,
     full_redraw: bool,
     time_changed: bool,
     battery_changed: bool,
@@ -150,6 +152,8 @@ impl WatchFace {
             day: 6,
             month: 4,
             year: 26,
+            next_wake_time: None,
+            aod_time_alert: false,
             full_redraw: true,
             time_changed: false,
             battery_changed: false,
@@ -176,6 +180,20 @@ impl WatchFace {
         self.day = day;
         self.month = month;
         self.year = year;
+    }
+
+    pub fn update_next_wake_time(&mut self, next_wake_time: Option<(u8, u8)>) {
+        if self.next_wake_time != next_wake_time {
+            self.next_wake_time = next_wake_time;
+            self.time_changed = true;
+        }
+    }
+
+    pub fn update_aod_time_alert(&mut self, alert: bool) {
+        if self.aod_time_alert != alert {
+            self.aod_time_alert = alert;
+            self.time_changed = true;
+        }
     }
 
     pub fn update_battery(&mut self, pct: u8, mv: u16, chg: bool) {
@@ -577,6 +595,11 @@ impl WatchFace {
         // HH:MM only (no seconds, no extra widgets).
         // About 80% white. The panel brightness is also set to ~80% when AOD is active.
         let dim_white = Rgb565::new(25, 50, 25);
+        let main_time_color = if self.aod_time_alert {
+            Rgb565::RED
+        } else {
+            dim_white
+        };
 
         // Keep the logo tied to the same anti burn-in offset as the time block.
         aod_logo::draw(
@@ -592,15 +615,30 @@ impl WatchFace {
             cy,
             self.hours,
             self.minutes,
-            dim_white,
+            main_time_color,
             Rgb565::BLACK,
         )?;
+
+        let battery_y = if let Some((wake_h, wake_m)) = self.next_wake_time {
+            segments::draw_hhmm_half(
+                d,
+                cx,
+                cy + 116,
+                wake_h,
+                wake_m,
+                Rgb565::new(10, 20, 10),
+                Rgb565::BLACK,
+            )?;
+            cy + 188
+        } else {
+            cy + 122
+        };
 
         // Tiny battery indicator at the bottom (3 chars max: "99%")
         let mut buf = [0u8; 4];
         let s = fmt_bat_short(&mut buf, self.battery_percent);
-        let style = MonoTextStyle::new(&FONT_10X20, Rgb565::new(8, 16, 8));
-        Text::with_alignment(s, Point::new(cx, cy + 110), style, Alignment::Center).draw(d)?;
+        let style = MonoTextStyle::new(&FONT_9X18_BOLD, Rgb565::new(10, 20, 10));
+        Text::with_alignment(s, Point::new(cx, battery_y), style, Alignment::Center).draw(d)?;
 
         // Reset dirty flags so the normal renderer does a full redraw on wake.
         self.full_redraw = true;

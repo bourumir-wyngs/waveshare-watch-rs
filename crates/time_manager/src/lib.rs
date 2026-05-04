@@ -2,6 +2,8 @@
 
 use core::time::Duration;
 
+pub mod schedule;
+
 pub const WEEKDAY_NONE: u8 = 0;
 pub const MONDAY: u8 = 1;
 pub const TUESDAY: u8 = 2;
@@ -61,15 +63,36 @@ pub enum Error {
     InvalidWeekday(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NextWake {
+    pub duration: Duration,
+    pub hour: u8,
+    pub minute: u8,
+    pub weekday: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosestWake {
+    pub difference: Duration,
+    pub hour: u8,
+    pub minute: u8,
+    pub weekday: u8,
+    pub is_future: bool,
+}
+
 pub fn sleep_duration_until_next(
     now: DateTime,
     records: &[TimeRecord],
 ) -> Result<Option<Duration>, Error> {
+    Ok(next_wake(now, records)?.map(|wake| wake.duration))
+}
+
+pub fn next_wake(now: DateTime, records: &[TimeRecord]) -> Result<Option<NextWake>, Error> {
     validate_datetime(now)?;
 
     let current_weekday = weekday_from_date(now.year, now.month, now.day)?;
     let now_seconds = seconds_since_midnight(now.hour, now.minute, now.second);
-    let mut best: Option<u64> = None;
+    let mut best: Option<NextWake> = None;
 
     for record in records {
         validate_record(*record)?;
@@ -80,26 +103,61 @@ pub fn sleep_duration_until_next(
                 continue;
             }
 
-            let mut days_until = days_until_weekday(current_weekday, weekday);
-            if days_until == 0 && target_seconds < now_seconds {
-                days_until = 7;
-            }
-
-            let mut delta = days_until as u64 * SECONDS_PER_DAY;
-            if target_seconds >= now_seconds {
-                delta += target_seconds - now_seconds;
-            } else {
-                delta -= now_seconds - target_seconds;
-            }
+            let delta = forward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
 
             best = Some(match best {
-                Some(existing) => existing.min(delta),
-                None => delta,
+                Some(existing) if existing.duration.as_secs() <= delta => existing,
+                _ => NextWake {
+                    duration: Duration::from_secs(delta),
+                    hour: record.hour,
+                    minute: record.minute,
+                    weekday,
+                },
             });
         }
     }
 
-    Ok(best.map(Duration::from_secs))
+    Ok(best)
+}
+
+pub fn closest_wake(now: DateTime, records: &[TimeRecord]) -> Result<Option<ClosestWake>, Error> {
+    validate_datetime(now)?;
+
+    let current_weekday = weekday_from_date(now.year, now.month, now.day)?;
+    let now_seconds = seconds_since_midnight(now.hour, now.minute, now.second);
+    let mut best: Option<ClosestWake> = None;
+
+    for record in records {
+        validate_record(*record)?;
+
+        let target_seconds = seconds_since_midnight(record.hour, record.minute, 0);
+        for weekday in record.weekdays {
+            if weekday == WEEKDAY_NONE {
+                continue;
+            }
+
+            let forward = forward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
+            let backward = backward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
+            let (difference, is_future) = if forward <= backward {
+                (forward, true)
+            } else {
+                (backward, false)
+            };
+
+            best = Some(match best {
+                Some(existing) if existing.difference.as_secs() <= difference => existing,
+                _ => ClosestWake {
+                    difference: Duration::from_secs(difference),
+                    hour: record.hour,
+                    minute: record.minute,
+                    weekday,
+                    is_future,
+                },
+            });
+        }
+    }
+
+    Ok(best)
 }
 
 pub fn weekday_from_date(year: i32, month: u8, day: u8) -> Result<u8, Error> {
@@ -182,8 +240,42 @@ fn seconds_since_midnight(hour: u8, minute: u8, second: u8) -> u64 {
     hour as u64 * 60 * 60 + minute as u64 * 60 + second as u64
 }
 
+fn forward_delta_seconds(current_weekday: u8, target_weekday: u8, now_seconds: u64, target_seconds: u64) -> u64 {
+    let mut days_until = days_until_weekday(current_weekday, target_weekday);
+    if days_until == 0 && target_seconds < now_seconds {
+        days_until = 7;
+    }
+
+    let mut delta = days_until as u64 * SECONDS_PER_DAY;
+    if target_seconds >= now_seconds {
+        delta += target_seconds - now_seconds;
+    } else {
+        delta -= now_seconds - target_seconds;
+    }
+    delta
+}
+
+fn backward_delta_seconds(current_weekday: u8, target_weekday: u8, now_seconds: u64, target_seconds: u64) -> u64 {
+    let mut days_since = days_since_weekday(current_weekday, target_weekday);
+    if days_since == 0 && target_seconds > now_seconds {
+        days_since = 7;
+    }
+
+    let mut delta = days_since as u64 * SECONDS_PER_DAY;
+    if now_seconds >= target_seconds {
+        delta += now_seconds - target_seconds;
+    } else {
+        delta -= target_seconds - now_seconds;
+    }
+    delta
+}
+
 fn days_until_weekday(current: u8, target: u8) -> u8 {
     (target + 7 - current) % 7
+}
+
+fn days_since_weekday(current: u8, target: u8) -> u8 {
+    (current + 7 - target) % 7
 }
 
 #[cfg(test)]
@@ -275,6 +367,76 @@ mod tests {
         assert_eq!(
             sleep_duration_until_next(now, &records),
             Ok(Some(Duration::from_secs(3 * 60)))
+        );
+    }
+
+    #[test]
+    fn next_wake_returns_selected_time_record() {
+        let now = DateTime::new(2026, 5, 4, 23, 55, 0);
+        let records = [
+            TimeRecord::new(7, 0, [TUESDAY, 0, 0, 0, 0, 0, 0]),
+            TimeRecord::new(23, 58, [MONDAY, 0, 0, 0, 0, 0, 0]),
+        ];
+
+        assert_eq!(
+            next_wake(now, &records),
+            Ok(Some(NextWake {
+                duration: Duration::from_secs(3 * 60),
+                hour: 23,
+                minute: 58,
+                weekday: MONDAY,
+            }))
+        );
+    }
+
+    #[test]
+    fn closest_wake_selects_near_future_entry() {
+        let now = DateTime::new(2026, 5, 4, 9, 23, 30);
+        let record = TimeRecord::new(9, 25, [MONDAY, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(
+            closest_wake(now, &[record]),
+            Ok(Some(ClosestWake {
+                difference: Duration::from_secs(90),
+                hour: 9,
+                minute: 25,
+                weekday: MONDAY,
+                is_future: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn closest_wake_selects_near_past_entry() {
+        let now = DateTime::new(2026, 5, 4, 9, 26, 30);
+        let record = TimeRecord::new(9, 25, [MONDAY, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(
+            closest_wake(now, &[record]),
+            Ok(Some(ClosestWake {
+                difference: Duration::from_secs(90),
+                hour: 9,
+                minute: 25,
+                weekday: MONDAY,
+                is_future: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn closest_wake_considers_previous_week() {
+        let now = DateTime::new(2026, 5, 4, 0, 1, 0);
+        let record = TimeRecord::new(23, 59, [SUNDAY, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(
+            closest_wake(now, &[record]),
+            Ok(Some(ClosestWake {
+                difference: Duration::from_secs(2 * 60),
+                hour: 23,
+                minute: 59,
+                weekday: SUNDAY,
+                is_future: false,
+            }))
         );
     }
 
