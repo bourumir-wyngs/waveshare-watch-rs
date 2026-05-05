@@ -79,6 +79,7 @@ use crate::ui::watchface::WatchFace;
 
 const AOD_BRIGHTNESS: u8 = 0xCC; // ~80%
 const AOD_DURATION_SECS: u64 = 7;
+const AOD_ALERT_WINDOW_SECS: u64 = 2 * 60;
 const SCREEN_OFF_HOUSEKEEPING_SECS: u64 = 600;
 const STARTUP_BEEP_TEST: bool = false;
 #[cfg(feature = "audio")]
@@ -241,8 +242,6 @@ fn aod_next_wake_time(dt: crate::peripherals::rtc::DateTime) -> Option<(u8, u8)>
 }
 
 fn aod_near_scheduled_time(dt: crate::peripherals::rtc::DateTime) -> bool {
-    const AOD_ALERT_WINDOW_SECS: u64 = 2 * 60;
-
     let now = rtc_to_time_manager_datetime(dt);
     match time_manager::closest_wake(now, &time_manager::schedule::WAKE_SCHEDULE) {
         Ok(Some(wake)) => wake.difference.as_secs() < AOD_ALERT_WINDOW_SECS,
@@ -1068,29 +1067,38 @@ async fn main(_spawner: Spawner) {
         if let Some(reason) = low_power_reason {
             println!("[POWER] Entering low power mode ({})", reason);
 
+            let skip_current_alert_window = woke_from_timer && boot_aod_time_alert;
             let scheduled_wake = match rtc.get_time() {
                 Ok(dt) => {
                     let now = rtc_to_time_manager_datetime(dt);
-                    match time_manager::sleep_duration_until_next(
-                        now,
-                        &time_manager::schedule::WAKE_SCHEDULE,
-                    ) {
-                        Ok(Some(duration)) => {
-                            println!("[POWER] nest wake up in {}s", duration.as_secs());
-                            Some(duration)
+                    let next_wake = if skip_current_alert_window {
+                        println!("[POWER] next wake: skipping current scheduler alert window");
+                        time_manager::next_wake_after(
+                            now,
+                            &time_manager::schedule::WAKE_SCHEDULE,
+                            core::time::Duration::from_secs(AOD_ALERT_WINDOW_SECS),
+                        )
+                    } else {
+                        time_manager::next_wake(now, &time_manager::schedule::WAKE_SCHEDULE)
+                    };
+
+                    match next_wake {
+                        Ok(Some(wake)) => {
+                            println!("[POWER] next wake up in {}s", wake.duration.as_secs());
+                            Some(wake.duration)
                         }
                         Ok(None) => {
-                            println!("[POWER] nest wake up: no scheduled times");
+                            println!("[POWER] next wake up: no scheduled times");
                             None
                         }
                         Err(err) => {
-                            println!("[POWER] nest wake up: schedule error {:?}", err);
+                            println!("[POWER] next wake up: schedule error {:?}", err);
                             None
                         }
                     }
                 }
                 Err(_) => {
-                    println!("[POWER] nest wake up: RTC read failed");
+                    println!("[POWER] next wake up: RTC read failed");
                     None
                 }
             };

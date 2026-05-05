@@ -88,6 +88,22 @@ pub fn sleep_duration_until_next(
 }
 
 pub fn next_wake(now: DateTime, records: &[TimeRecord]) -> Result<Option<NextWake>, Error> {
+    next_wake_with_minimum(now, records, None)
+}
+
+pub fn next_wake_after(
+    now: DateTime,
+    records: &[TimeRecord],
+    minimum_duration: Duration,
+) -> Result<Option<NextWake>, Error> {
+    next_wake_with_minimum(now, records, Some(minimum_duration.as_secs()))
+}
+
+fn next_wake_with_minimum(
+    now: DateTime,
+    records: &[TimeRecord],
+    minimum_duration_secs: Option<u64>,
+) -> Result<Option<NextWake>, Error> {
     validate_datetime(now)?;
 
     let current_weekday = weekday_from_date(now.year, now.month, now.day)?;
@@ -103,7 +119,13 @@ pub fn next_wake(now: DateTime, records: &[TimeRecord]) -> Result<Option<NextWak
                 continue;
             }
 
-            let delta = forward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
+            let mut delta =
+                forward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
+            if let Some(minimum_duration_secs) = minimum_duration_secs {
+                while delta <= minimum_duration_secs {
+                    delta += 7 * SECONDS_PER_DAY;
+                }
+            }
 
             best = Some(match best {
                 Some(existing) if existing.duration.as_secs() <= delta => existing,
@@ -384,6 +406,41 @@ mod tests {
                 duration: Duration::from_secs(3 * 60),
                 hour: 23,
                 minute: 58,
+                weekday: MONDAY,
+            }))
+        );
+    }
+
+    #[test]
+    fn next_wake_after_skips_wake_inside_minimum_duration() {
+        let now = DateTime::new(2026, 5, 4, 9, 24, 30);
+        let records = [
+            TimeRecord::new(9, 25, [MONDAY, 0, 0, 0, 0, 0, 0]),
+            TimeRecord::new(11, 0, [MONDAY, 0, 0, 0, 0, 0, 0]),
+        ];
+
+        assert_eq!(
+            next_wake_after(now, &records, Duration::from_secs(2 * 60)),
+            Ok(Some(NextWake {
+                duration: Duration::from_secs(60 * 60 + 35 * 60 + 30),
+                hour: 11,
+                minute: 0,
+                weekday: MONDAY,
+            }))
+        );
+    }
+
+    #[test]
+    fn next_wake_after_rolls_skipped_weekday_to_next_week() {
+        let now = DateTime::new(2026, 5, 4, 9, 25, 0);
+        let record = TimeRecord::new(9, 25, [MONDAY, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(
+            next_wake_after(now, &[record], Duration::from_secs(2 * 60)),
+            Ok(Some(NextWake {
+                duration: Duration::from_secs(7 * SECONDS_PER_DAY),
+                hour: 9,
+                minute: 25,
                 weekday: MONDAY,
             }))
         );
