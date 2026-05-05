@@ -8,7 +8,7 @@ pub const EVERY_DAY: [u8; 7] = [
 pub const WAKE_SCHEDULE: [TimeRecord; 5] = [
     TimeRecord::new(9, 25, [MONDAY, WEDNESDAY, FRIDAY, 0, 0, 0, 0]),
     TimeRecord::new(9, 54, [TUESDAY, 0, 0, 0, 0, 0, 0]),
-    TimeRecord::new(11, 27, WORKING_DAYS),
+    TimeRecord::new(11, 27, [MONDAY, WEDNESDAY, THURSDAY, FRIDAY, 0, 0, 0]),
     TimeRecord::new(17, 30, WORKING_DAYS),
     TimeRecord::new(20, 57, EVERY_DAY),
 ];
