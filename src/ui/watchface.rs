@@ -118,6 +118,7 @@ pub struct WatchFace {
     day: u8,
     month: u8,
     year: u8,
+    weekday: u8,
     next_wake_time: Option<(u8, u8)>,
     aod_time_alert: bool,
     full_redraw: bool,
@@ -152,6 +153,7 @@ impl WatchFace {
             day: 6,
             month: 4,
             year: 26,
+            weekday: 1, // MONDAY
             next_wake_time: None,
             aod_time_alert: false,
             full_redraw: true,
@@ -176,10 +178,14 @@ impl WatchFace {
         }
     }
 
-    pub fn update_date(&mut self, day: u8, month: u8, year: u8) {
-        self.day = day;
-        self.month = month;
-        self.year = year;
+    pub fn update_date(&mut self, day: u8, month: u8, year: u8, weekday: u8) {
+        if self.day != day || self.month != month || self.year != year || self.weekday != weekday {
+            self.day = day;
+            self.month = month;
+            self.year = year;
+            self.weekday = weekday;
+            self.time_changed = true;
+        }
     }
 
     pub fn update_next_wake_time(&mut self, next_wake_time: Option<(u8, u8)>) {
@@ -710,9 +716,9 @@ impl WatchFace {
                 Rgb565::BLACK,
             )?;
 
-            // Date FR under time
-            let mut date_buf = [0u8; 12];
-            let ds = fmt_date_fr(&mut date_buf, self.day, self.month, self.year);
+            // Date EN under time
+            let mut date_buf = [0u8; 18];
+            let ds = fmt_date_en(&mut date_buf, self.day, self.month, self.year, self.weekday);
             Text::with_alignment(ds, Point::new(cx, 150), dim, Alignment::Center).draw(d)?;
 
             // Battery bar + percentage (more space below date)
@@ -939,9 +945,27 @@ fn fmt_mhz_short<'a>(buf: &'a mut [u8; 5], mhz: u16) -> &'a str {
     core::str::from_utf8(&buf[..p]).unwrap_or("?M")
 }
 
-fn fmt_date_fr<'a>(buf: &'a mut [u8; 12], d: u8, m: u8, y: u8) -> &'a str {
-    // Format: "DD/MM/20YY"
+fn fmt_date_en<'a>(buf: &'a mut [u8; 18], d: u8, m: u8, y: u8, wd: u8) -> &'a str {
+    // Format: "WD DD/MM/20YY"
     let mut p = 0;
+
+    let w_str = match wd {
+        1 => "Mon",
+        2 => "Tue",
+        3 => "Wed",
+        4 => "Thu",
+        5 => "Fri",
+        6 => "Sat",
+        7 => "Sun",
+        _ => "---",
+    };    
+    for b in w_str.as_bytes() {
+        buf[p] = *b;
+        p += 1;
+    }
+    buf[p] = b' ';
+    p += 1;
+
     buf[p] = b'0' + d / 10;
     p += 1;
     buf[p] = b'0' + d % 10;

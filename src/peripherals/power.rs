@@ -152,11 +152,10 @@ impl<I: I2c> Axp2101Power<I> {
 
     /// Disable power-hungry rails and ADC before deep sleep.
     pub fn power_down_for_sleep(&mut self) -> Result<(), I::Error> {
-        // Turn off ALDO1 (display/peripheral power)
-        let ldo_ctrl = self.read_reg(REG_LDO_ONOFF0)?;
-        self.write_reg(REG_LDO_ONOFF0, ldo_ctrl & !0x01)?;
-        
-        // Turn off all ADCs
+        // Turn off all ADCs (saves ~1-2 mA)
+        // We MUST NOT turn off ALDO1 here, as it powers the pull-up resistors 
+        // for the I2C bus. Turning it off will permanently hang the I2C bus 
+        // when the ESP32 wakes up and tries to re-initialize the AXP2101!
         self.write_reg(REG_ADC_ENABLE, 0x00)?;
         
         Ok(())

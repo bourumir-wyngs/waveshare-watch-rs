@@ -16,6 +16,8 @@ const REG_DAYS: u8 = 0x07;
 const REG_WEEKDAYS: u8 = 0x08;
 const REG_MONTHS: u8 = 0x09;
 const REG_YEARS: u8 = 0x0A;
+const REG_TIMER_VAL: u8 = 0x10;
+const REG_TIMER_MODE: u8 = 0x11;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DateTime {
@@ -108,6 +110,44 @@ impl<I: I2c> Pcf85063aRtc<I> {
         // Restart oscillator
         self.write_reg(REG_CTRL1, ctrl1 & !0x20)?;
         Ok(())
+    }
+
+    /// Clear any pending timer/alarm interrupts.
+    pub fn clear_interrupts(&mut self) -> Result<(), I::Error> {
+        let ctrl2 = self.read_reg(REG_CTRL2)?;
+        // Clear TF (bit 3) and AF (bit 6)
+        let new_ctrl2 = ctrl2 & !((1 << 3) | (1 << 6));
+        self.write_reg(REG_CTRL2, new_ctrl2)
+    }
+
+    /// Enable countdown timer to trigger an interrupt after `seconds`.
+    pub fn enable_timer(&mut self, seconds: u32) -> Result<(), I::Error> {
+        // Disable timer first
+        self.write_reg(REG_TIMER_MODE, 0x00)?;
+
+        let (tcf, val) = if seconds <= 255 {
+            // 1 Hz clock
+            (0b10, seconds as u8)
+        } else {
+            // 1/60 Hz clock
+            let minutes = (seconds + 59) / 60;
+            let minutes = if minutes > 255 { 255 } else { minutes };
+            (0b11, minutes as u8)
+        };
+
+        // Write timer value
+        self.write_reg(REG_TIMER_VAL, val)?;
+
+        // Timer mode: TCF (bits 4:3), TE=1 (bit 2), TIE=1 (bit 1), TI_TP=0 (bit 0)
+        let mode = (tcf << 3) | 0b0110;
+        self.write_reg(REG_TIMER_MODE, mode)?;
+
+        Ok(())
+    }
+
+    /// Disable the countdown timer.
+    pub fn disable_timer(&mut self) -> Result<(), I::Error> {
+        self.write_reg(REG_TIMER_MODE, 0x00)
     }
 }
 

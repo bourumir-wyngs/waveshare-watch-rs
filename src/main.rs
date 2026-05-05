@@ -113,7 +113,7 @@ async fn net_task(
 async fn ntp_sync(
     stack: embassy_net::Stack<'static>,
     rtc: &mut crate::peripherals::rtc::Pcf85063aRtc<impl embedded_hal::i2c::I2c>,
-) -> Result<(), ()> {
+) -> Result<(), &'static str> {
     use embassy_net::udp::{PacketMetadata, UdpSocket};
 
     let mut rx_meta = [PacketMetadata::EMPTY; 1];
@@ -122,7 +122,7 @@ async fn ntp_sync(
     let mut tx_buf = [0u8; 256];
 
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
-    socket.bind(12345).map_err(|_| ())?;
+    socket.bind(12345).map_err(|_| "Bind failed")?;
 
     // NTP request packet (simplified: 48 bytes, first byte = 0x1B for client mode)
     let mut ntp_request = [0u8; 48];
@@ -133,7 +133,7 @@ async fn ntp_sync(
     socket
         .send_to(&ntp_request, (ntp_addr, 123))
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| "Send failed")?;
 
     // Wait for response (timeout 5s)
     let mut response = [0u8; 48];
@@ -164,7 +164,8 @@ async fn ntp_sync(
             );
 
             // Set RTC
-            let dt = crate::peripherals::rtc::DateTime::new(
+            let weekday = time_manager::weekday_from_date(year as i32, month as u8, day as u8).unwrap_or(0);
+            let mut dt = crate::peripherals::rtc::DateTime::new(
                 (year - 2000) as u8,
                 month as u8,
                 day as u8,
@@ -172,10 +173,13 @@ async fn ntp_sync(
                 minutes,
                 seconds,
             );
+            dt.weekday = weekday;
             let _ = rtc.set_time(&dt);
             Ok(())
         }
-        _ => Err(()),
+        Ok(Ok(_)) => Err("Invalid response length"),
+        Ok(Err(_)) => Err("Receive failed"),
+        Err(_) => Err("Timeout"),
     }
 }
 
@@ -335,7 +339,7 @@ async fn main(_spawner: Spawner) {
     // Power-aware: default to 160MHz instead of 240MHz.
     // Saves ~30% CPU power without noticeable impact on UI/sensor work.
     // Game code can still trigger short bursts via DMA/peripherals at 80MHz QSPI which is unchanged.
-    let peripherals =
+    let mut peripherals =
         esp_hal::init(esp_hal::Config::default().with_cpu_clock(esp_hal::clock::CpuClock::_160MHz));
 
     // PSRAM
@@ -353,6 +357,69 @@ async fn main(_spawner: Spawner) {
     let boot_wakeup_cause = wakeup_cause();
     let woke_from_timer = matches!(boot_wakeup_cause, SleepSource::Timer);
     println!("[POWER] Wake cause: {:?}", boot_wakeup_cause);
+
+    // === RESCUE DEAD I2C BUS ===
+    // If the previous firmware turned off ALDO1, the I2C pullups are dead.
+    // The hardware I2C controller will fail because the bus is stuck low.
+    // We bit-bang a push-pull write to AXP2101 to turn ALDO1 back on.
+    {
+        // START
+        {
+            let mut sda_out = Output::new(peripherals.GPIO15.reborrow(), Level::High, OutputConfig::default());
+            let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::High, OutputConfig::default());
+            delay.delay_micros(50);
+            sda_out.set_low();
+            delay.delay_micros(10);
+            scl_out.set_low();
+            delay.delay_micros(10);
+        }
+
+        macro_rules! send_byte {
+            ($byte:expr) => {
+                for i in (0..8).rev() {
+                    let _sda_out = Output::new(
+                        peripherals.GPIO15.reborrow(),
+                        if ($byte & (1 << i)) != 0 { Level::High } else { Level::Low },
+                        OutputConfig::default(),
+                    );
+                    let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::Low, OutputConfig::default());
+                    delay.delay_micros(10);
+                    scl_out.set_high();
+                    delay.delay_micros(10);
+                    scl_out.set_low();
+                    delay.delay_micros(10);
+                }
+                // ACK
+                {
+                    let _sda_in = Input::new(peripherals.GPIO15.reborrow(), InputConfig::default());
+                    let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::Low, OutputConfig::default());
+                    delay.delay_micros(10);
+                    scl_out.set_high();
+                    delay.delay_micros(10);
+                    scl_out.set_low();
+                    delay.delay_micros(10);
+                }
+                {
+                    let _sda_out = Output::new(peripherals.GPIO15.reborrow(), Level::Low, OutputConfig::default());
+                }
+            };
+        }
+
+        send_byte!(0x68); // 0x34 << 1 | 0 (Write)
+        send_byte!(0x90); // REG_LDO_ONOFF0
+        send_byte!(0x01); // Enable ALDO1
+
+        // STOP
+        {
+            let mut sda_out = Output::new(peripherals.GPIO15.reborrow(), Level::Low, OutputConfig::default());
+            let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::Low, OutputConfig::default());
+            delay.delay_micros(10);
+            scl_out.set_high();
+            delay.delay_micros(10);
+            sda_out.set_high();
+            delay.delay_micros(50);
+        }
+    }
 
     // === I2C Bus ===
     let i2c = I2c::new(
@@ -470,7 +537,7 @@ async fn main(_spawner: Spawner) {
     }
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
-        watchface.update_date(dt.day, dt.month, dt.year);
+        watchface.update_date(dt.day, dt.month, dt.year, dt.weekday);
         watchface.update_next_wake_time(aod_next_wake_time(dt));
         boot_aod_time_alert = aod_near_scheduled_time(dt);
         watchface.update_aod_time_alert(boot_aod_time_alert);
@@ -1217,7 +1284,7 @@ async fn main(_spawner: Spawner) {
         if screen_state >= 2 && now >= next_rtc {
             if let Ok(dt) = rtc.get_time() {
                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
-                watchface.update_date(dt.day, dt.month, dt.year);
+                watchface.update_date(dt.day, dt.month, dt.year, dt.weekday);
             }
             next_rtc = now + Duration::from_secs(1);
         }
@@ -1395,10 +1462,10 @@ async fn main(_spawner: Spawner) {
                         }
                     }
                     if wifi_started {
-                        // 8 s timeout — avoids blocking the UI forever if AP
+                        // 15 s timeout — avoids blocking the UI forever if AP
                         // is unreachable or credentials are wrong.
                         match embassy_time::with_timeout(
-                            Duration::from_secs(8),
+                            Duration::from_secs(15),
                             controller.connect_async(),
                         )
                         .await
@@ -1412,17 +1479,24 @@ async fn main(_spawner: Spawner) {
                                 // NTP sync only once per boot, after DHCP lands.
                                 if !ntp_synced {
                                     if let Some(stack) = stack {
-                                        for _ in 0..30 {
+                                        println!("[WIFI] Waiting for DHCP IP...");
+                                        for _ in 0..50 {
                                             if stack.config_v4().is_some() {
                                                 break;
                                             }
                                             Timer::after(Duration::from_millis(100)).await;
                                         }
-                                        if stack.config_v4().is_some() {
-                                            if ntp_sync(stack, &mut rtc).await.is_ok() {
-                                                ntp_synced = true;
-                                                println!("[NTP] synced");
+                                        if let Some(cfg) = stack.config_v4() {
+                                            println!("[WIFI] IP acquired: {:?}", cfg.address);
+                                            match ntp_sync(stack, &mut rtc).await {
+                                                Ok(_) => {
+                                                    ntp_synced = true;
+                                                    println!("[NTP] synced");
+                                                }
+                                                Err(e) => println!("[NTP] sync failed: {:?}", e),
                                             }
+                                        } else {
+                                            println!("[WIFI] DHCP timeout");
                                         }
                                     }
                                 }
