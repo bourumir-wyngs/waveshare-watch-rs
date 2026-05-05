@@ -149,4 +149,16 @@ impl<I: I2c> Axp2101Power<I> {
         // Drop TEMP (bit 4) to 0b00001101 = VBAT+VBUS+VSYS only.
         self.write_reg(REG_ADC_ENABLE, 0b00001101)
     }
+
+    /// Disable power-hungry rails and ADC before deep sleep.
+    pub fn power_down_for_sleep(&mut self) -> Result<(), I::Error> {
+        // Turn off ALDO1 (display/peripheral power)
+        let ldo_ctrl = self.read_reg(REG_LDO_ONOFF0)?;
+        self.write_reg(REG_LDO_ONOFF0, ldo_ctrl & !0x01)?;
+        
+        // Turn off all ADCs
+        self.write_reg(REG_ADC_ENABLE, 0x00)?;
+        
+        Ok(())
+    }
 }

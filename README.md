@@ -348,7 +348,7 @@ On Linux: `/dev/ttyACM0` or `/dev/ttyUSB0` depending on the USB bridge.
 - **BLE**: `esp-radio` compiled with stub feature, init disabled due to a panic `btdm_controller_init -4` in coex with WiFi (requires additional `coex` config).
 - **WiFi scan list**: `ScanResult` types ready, Settings UI shows the field but without scan.
 - **USB Mass Storage**: not wired (copy-from-PC would require `usb-device` + `usbd-storage`).
-- **ESP deep sleep**: no `esp_hal::system::Sleep` — we stay in light sleep via the Embassy executor, sufficient for watch usage.
+- **ESP deep sleep**: implemented using `esp_hal::system::Sleep`. We turn off the AXP2101 `ALDO1` power rail and internal ADCs before sleeping to achieve true micro-amp deep sleep, waking up via the BOOT button or RTC timer.
 
 ---
 
@@ -498,7 +498,7 @@ loop {
 | Power management           | XPowersLib (C++)                     | Custom driver power.rs on embedded-hal I2C         |
 | Audio                      | ES8311 Arduino driver                | Custom driver audio.rs (registers faithful to C)   |
 | WiFi                       | ESP-IDF wifi_init + lwIP             | esp-radio + embassy-net (smoltcp)                  |
-| Sleep                      | Not implemented                      | 4 levels + AOD, event-driven select3               |
+| Sleep                      | Not implemented                      | 4 levels + AOD, true deep sleep with AXP2101 power down |
 | Build system               | PlatformIO / Arduino IDE             | Cargo, Xtensa cross-compile via espup              |
 | Safety                     | Raw pointers, buffer overflows       | Ownership, borrow checker, no UB                   |
 | Firmware size              | ~1.2 MB (ESP-IDF + LVGL + WiFi)      | 579 KB (all included)                              |

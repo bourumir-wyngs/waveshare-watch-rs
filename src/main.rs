@@ -1140,6 +1140,7 @@ async fn main(_spawner: Spawner) {
             touch_rst.set_low();
             display.set_brightness(0x00);
             display.display_off();
+            let _ = power.power_down_for_sleep();
             if scheduled_wake.is_some() {
                 println!("[POWER] Deep sleep armed; wake sources: BOOT/GPIO0 low + timer");
             } else {
