@@ -9,6 +9,7 @@ const PCF85063A_ADDR: u8 = 0x51;
 // Registers
 const REG_CTRL1: u8 = 0x00;
 const REG_CTRL2: u8 = 0x01;
+const REG_RAM_BYTE: u8 = 0x03;
 const REG_SECONDS: u8 = 0x04;
 const REG_MINUTES: u8 = 0x05;
 const REG_HOURS: u8 = 0x06;
@@ -61,6 +62,34 @@ impl<I: I2c> Pcf85063aRtc<I> {
 
     fn write_reg(&mut self, reg: u8, val: u8) -> Result<(), I::Error> {
         self.i2c.write(PCF85063A_ADDR, &[reg, val])
+    }
+
+    /// Read the RTC's battery-backed user RAM byte (register 0x03).
+    ///
+    /// This is a single byte of storage inside the PCF85063A. It is retained
+    /// while the RTC remains powered, including across MCU resets/deep sleep,
+    /// but is not non-volatile flash/EEPROM.
+    pub fn read_ram_byte(&mut self) -> Result<u8, I::Error> {
+        self.read_reg(REG_RAM_BYTE)
+    }
+
+    /// Write the RTC's battery-backed user RAM byte (register 0x03).
+    ///
+    /// See [`read_ram_byte`](Self::read_ram_byte) for retention notes.
+    pub fn write_ram_byte(&mut self, value: u8) -> Result<(), I::Error> {
+        self.write_reg(REG_RAM_BYTE, value)
+    }
+
+    /// Set selected bits in the RTC RAM byte, leaving all other bits unchanged.
+    pub fn set_ram_flags(&mut self, mask: u8) -> Result<(), I::Error> {
+        let value = self.read_ram_byte()?;
+        self.write_ram_byte(value | mask)
+    }
+
+    /// Clear selected bits in the RTC RAM byte, leaving all other bits unchanged.
+    pub fn clear_ram_flags(&mut self, mask: u8) -> Result<(), I::Error> {
+        let value = self.read_ram_byte()?;
+        self.write_ram_byte(value & !mask)
     }
 
     /// Initialize RTC: ensure oscillator running, 24h mode.
