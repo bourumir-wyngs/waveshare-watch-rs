@@ -120,7 +120,7 @@ pub struct WatchFace {
     year: u8,
     weekday: u8,
     next_wake_time: Option<(u8, u8)>,
-    aod_time_alert: bool,
+    aod_time_alert_color: Option<Rgb565>,
     full_redraw: bool,
     time_changed: bool,
     battery_changed: bool,
@@ -155,7 +155,7 @@ impl WatchFace {
             year: 26,
             weekday: 1, // MONDAY
             next_wake_time: None,
-            aod_time_alert: false,
+            aod_time_alert_color: None,
             full_redraw: true,
             time_changed: false,
             battery_changed: false,
@@ -195,9 +195,9 @@ impl WatchFace {
         }
     }
 
-    pub fn update_aod_time_alert(&mut self, alert: bool) {
-        if self.aod_time_alert != alert {
-            self.aod_time_alert = alert;
+    pub fn update_aod_time_alert_color(&mut self, alert_color: Option<Rgb565>) {
+        if self.aod_time_alert_color != alert_color {
+            self.aod_time_alert_color = alert_color;
             self.time_changed = true;
         }
     }
@@ -601,11 +601,7 @@ impl WatchFace {
         // HH:MM only (no seconds, no extra widgets).
         // About 80% white. The panel brightness is also set to ~80% when AOD is active.
         let dim_white = Rgb565::new(25, 50, 25);
-        let main_time_color = if self.aod_time_alert {
-            Rgb565::RED
-        } else {
-            dim_white
-        };
+        let main_time_color = self.aod_time_alert_color.unwrap_or(dim_white);
 
         // Keep the logo tied to the same anti burn-in offset as the time block.
         aod_logo::draw(

@@ -1,4 +1,4 @@
-use crate::{TimeRecord, FRIDAY, MONDAY, SATURDAY, SUNDAY, THURSDAY, TUESDAY, WEDNESDAY};
+use crate::{Rgb, TimeRecord, FRIDAY, MONDAY, SATURDAY, SUNDAY, THURSDAY, TUESDAY, WEDNESDAY};
 
 pub const WORKING_DAYS: [u8; 7] = [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, 0, 0];
 pub const EVERY_DAY: [u8; 7] = [
@@ -6,11 +6,21 @@ pub const EVERY_DAY: [u8; 7] = [
 ];
 
 pub const WAKE_SCHEDULE: [TimeRecord; 5] = [
-    TimeRecord::new(9, 25, [MONDAY, WEDNESDAY, FRIDAY, 0, 0, 0, 0]),
-    TimeRecord::new(9, 54, [TUESDAY, 0, 0, 0, 0, 0, 0]),
-    TimeRecord::new(11, 27, [MONDAY, WEDNESDAY, THURSDAY, FRIDAY, 0, 0, 0]),
-    TimeRecord::new(17, 30, WORKING_DAYS),
-    TimeRecord::new(20, 57, EVERY_DAY),
+    TimeRecord::new_with_color(
+        9,
+        25,
+        [MONDAY, WEDNESDAY, FRIDAY, 0, 0, 0, 0],
+        Rgb::new(255, 0, 0),
+    ),
+    TimeRecord::new_with_color(9, 54, [TUESDAY, 0, 0, 0, 0, 0, 0], Rgb::new(0, 255, 0)),
+    TimeRecord::new_with_color(
+        11,
+        27,
+        [MONDAY, WEDNESDAY, THURSDAY, FRIDAY, 0, 0, 0],
+        Rgb::new(0, 128, 255),
+    ),
+    TimeRecord::new_with_color(17, 30, WORKING_DAYS, Rgb::new(255, 255, 0)),
+    TimeRecord::new_with_color(20, 57, EVERY_DAY, Rgb::new(255, 0, 255)),
 ];
 
 #[cfg(test)]

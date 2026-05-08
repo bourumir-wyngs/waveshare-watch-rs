@@ -21,6 +21,8 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::RgbColor;
 
 use esp_hal::delay::Delay;
 use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
@@ -245,12 +247,18 @@ fn aod_next_wake_time(dt: crate::peripherals::rtc::DateTime) -> Option<(u8, u8)>
     }
 }
 
-fn aod_near_scheduled_time(dt: crate::peripherals::rtc::DateTime) -> bool {
+fn aod_scheduled_time_alert_color(dt: crate::peripherals::rtc::DateTime) -> Option<Rgb565> {
     let now = rtc_to_time_manager_datetime(dt);
     match time_manager::closest_wake(now, &time_manager::schedule::WAKE_SCHEDULE) {
-        Ok(Some(wake)) => wake.difference.as_secs() < AOD_ALERT_WINDOW_SECS,
-        _ => false,
+        Ok(Some(wake)) if wake.difference.as_secs() < AOD_ALERT_WINDOW_SECS => {
+            Some(schedule_rgb_to_rgb565(wake.color))
+        }
+        _ => None,
     }
+}
+
+fn schedule_rgb_to_rgb565(color: time_manager::Rgb) -> Rgb565 {
+    Rgb565::new(color.red >> 3, color.green >> 2, color.blue >> 3)
 }
 
 #[cfg(feature = "audio")]
@@ -281,9 +289,6 @@ fn app_needs_motion_imu(app_state: AppState) -> bool {
         _ => false,
     }
 }
-
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::RgbColor;
 
 /// Take a cheap snapshot of the current power state into the shared
 /// `PowerStats` struct. Called from the Power page renderer (and from the
@@ -571,8 +576,9 @@ async fn main(_spawner: Spawner) {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year, dt.weekday);
         watchface.update_next_wake_time(aod_next_wake_time(dt));
-        boot_aod_time_alert = aod_near_scheduled_time(dt);
-        watchface.update_aod_time_alert(boot_aod_time_alert);
+        let alert_color = aod_scheduled_time_alert_color(dt);
+        boot_aod_time_alert = alert_color.is_some();
+        watchface.update_aod_time_alert_color(alert_color);
         aod_last_minute = dt.minutes;
     }
     display.set_brightness(AOD_BRIGHTNESS);
@@ -1614,7 +1620,7 @@ async fn main(_spawner: Spawner) {
                     aod_last_minute = dt.minutes;
                     watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                     watchface.update_next_wake_time(aod_next_wake_time(dt));
-                    watchface.update_aod_time_alert(aod_near_scheduled_time(dt));
+                    watchface.update_aod_time_alert_color(aod_scheduled_time_alert_color(dt));
                     if let Ok(pct) = power.get_battery_percent() {
                         watchface.update_battery(pct, batt_mv, charging);
                     }
@@ -1678,7 +1684,9 @@ async fn main(_spawner: Spawner) {
                                 aod_last_minute = dt.minutes;
                                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
                                 watchface.update_next_wake_time(aod_next_wake_time(dt));
-                                watchface.update_aod_time_alert(aod_near_scheduled_time(dt));
+                                watchface.update_aod_time_alert_color(
+                                    aod_scheduled_time_alert_color(dt),
+                                );
                                 if let Ok(pct) = power.get_battery_percent() {
                                     watchface.update_battery(pct, batt_mv, charging);
                                 }

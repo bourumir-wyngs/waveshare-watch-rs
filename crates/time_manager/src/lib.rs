@@ -39,19 +39,40 @@ impl DateTime {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rgb {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+impl Rgb {
+    pub const RED: Self = Self::new(255, 0, 0);
+
+    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
+        Self { red, green, blue }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeRecord {
     pub hour: u8,
     pub minute: u8,
     /// Enabled weekdays. Use 1 = Monday through 7 = Sunday. Use 0 for unused slots.
     pub weekdays: [u8; 7],
+    pub color: Rgb,
 }
 
 impl TimeRecord {
     pub const fn new(hour: u8, minute: u8, weekdays: [u8; 7]) -> Self {
+        Self::new_with_color(hour, minute, weekdays, Rgb::RED)
+    }
+
+    pub const fn new_with_color(hour: u8, minute: u8, weekdays: [u8; 7], color: Rgb) -> Self {
         Self {
             hour,
             minute,
             weekdays,
+            color,
         }
     }
 }
@@ -69,6 +90,7 @@ pub struct NextWake {
     pub hour: u8,
     pub minute: u8,
     pub weekday: u8,
+    pub color: Rgb,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +99,7 @@ pub struct ClosestWake {
     pub hour: u8,
     pub minute: u8,
     pub weekday: u8,
+    pub color: Rgb,
     pub is_future: bool,
 }
 
@@ -134,6 +157,7 @@ fn next_wake_with_minimum(
                     hour: record.hour,
                     minute: record.minute,
                     weekday,
+                    color: record.color,
                 },
             });
         }
@@ -175,6 +199,7 @@ pub fn closest_wake(now: DateTime, records: &[TimeRecord]) -> Result<Option<Clos
                     hour: record.hour,
                     minute: record.minute,
                     weekday,
+                    color: record.color,
                     is_future,
                 },
             });
@@ -419,6 +444,7 @@ mod tests {
                 hour: 23,
                 minute: 58,
                 weekday: MONDAY,
+                color: Rgb::RED,
             }))
         );
     }
@@ -438,6 +464,7 @@ mod tests {
                 hour: 11,
                 minute: 0,
                 weekday: MONDAY,
+                color: Rgb::RED,
             }))
         );
     }
@@ -454,6 +481,7 @@ mod tests {
                 hour: 9,
                 minute: 25,
                 weekday: MONDAY,
+                color: Rgb::RED,
             }))
         );
     }
@@ -470,6 +498,7 @@ mod tests {
                 hour: 9,
                 minute: 25,
                 weekday: MONDAY,
+                color: Rgb::RED,
                 is_future: true,
             }))
         );
@@ -488,6 +517,7 @@ mod tests {
                 minute: 25,
                 weekday: MONDAY,
                 is_future: false,
+                color: Rgb::RED,
             }))
         );
     }
@@ -504,6 +534,7 @@ mod tests {
                 hour: 23,
                 minute: 59,
                 weekday: SUNDAY,
+                color: Rgb::RED,
                 is_future: false,
             }))
         );
