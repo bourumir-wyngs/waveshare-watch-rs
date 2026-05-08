@@ -19,8 +19,10 @@ pub struct WifiConfig {
 impl WifiConfig {
     pub fn new() -> Self {
         Self {
-            ssid: [0; 32], ssid_len: 0,
-            password: [0; 64], pass_len: 0,
+            ssid: [0; 32],
+            ssid_len: 0,
+            password: [0; 64],
+            pass_len: 0,
         }
     }
 

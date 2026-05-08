@@ -1,12 +1,12 @@
 // Snake Game - ported from C++ SnakeGame.cpp
 // Grid: 20x21 cells, 20px per cell, 8-direction movement, wall wrapping
 
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
 use embedded_graphics::geometry::Point as EgPoint;
-use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRectangle};
 use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRectangle};
 use embedded_graphics::text::{Alignment, Text};
 
 use crate::apps::{App, AppInput, AppResult};
@@ -22,12 +22,21 @@ const GAME_SPEED_MS: u32 = 130;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Direction {
-    Up, Down, Left, Right,
-    UpLeft, UpRight, DownLeft, DownRight,
+    Up,
+    Down,
+    Left,
+    Right,
+    UpLeft,
+    UpRight,
+    DownLeft,
+    DownRight,
 }
 
 #[derive(Clone, Copy)]
-struct Point { x: i32, y: i32 }
+struct Point {
+    x: i32,
+    y: i32,
+}
 
 pub struct SnakeGame {
     snake: [Point; MAX_SNAKE_LEN],
@@ -71,8 +80,12 @@ impl SnakeGame {
         self.food.y = self.random(GRID_H);
     }
 
-    pub fn score(&self) -> u32 { self.score }
-    pub fn stepped(&self) -> bool { self.did_step }
+    pub fn score(&self) -> u32 {
+        self.score
+    }
+    pub fn stepped(&self) -> bool {
+        self.did_step
+    }
 
     fn handle_swipe(&mut self, dir: SwipeDirection) {
         self.next_dir = match dir {
@@ -86,13 +99,24 @@ impl SnakeGame {
 }
 
 impl App for SnakeGame {
-    fn name(&self) -> &str { "Snake" }
+    fn name(&self) -> &str {
+        "Snake"
+    }
 
     fn setup(&mut self) {
         self.len = 3;
-        self.snake[0] = Point { x: GRID_W / 2, y: GRID_H / 2 };
-        self.snake[1] = Point { x: GRID_W / 2, y: GRID_H / 2 + 1 };
-        self.snake[2] = Point { x: GRID_W / 2, y: GRID_H / 2 + 2 };
+        self.snake[0] = Point {
+            x: GRID_W / 2,
+            y: GRID_H / 2,
+        };
+        self.snake[1] = Point {
+            x: GRID_W / 2,
+            y: GRID_H / 2 + 1,
+        };
+        self.snake[2] = Point {
+            x: GRID_W / 2,
+            y: GRID_H / 2 + 2,
+        };
         self.dir = Direction::Up;
         self.next_dir = Direction::Up;
         self.score = 0;
@@ -123,17 +147,35 @@ impl App for SnakeGame {
                 Direction::Down => head.y += 1,
                 Direction::Left => head.x -= 1,
                 Direction::Right => head.x += 1,
-                Direction::UpLeft => { head.x -= 1; head.y -= 1; }
-                Direction::UpRight => { head.x += 1; head.y -= 1; }
-                Direction::DownLeft => { head.x -= 1; head.y += 1; }
-                Direction::DownRight => { head.x += 1; head.y += 1; }
+                Direction::UpLeft => {
+                    head.x -= 1;
+                    head.y -= 1;
+                }
+                Direction::UpRight => {
+                    head.x += 1;
+                    head.y -= 1;
+                }
+                Direction::DownLeft => {
+                    head.x -= 1;
+                    head.y += 1;
+                }
+                Direction::DownRight => {
+                    head.x += 1;
+                    head.y += 1;
+                }
             }
 
             // Wall wrapping
-            if head.x < 0 { head.x = GRID_W - 1; }
-            else if head.x >= GRID_W { head.x = 0; }
-            if head.y < 0 { head.y = GRID_H - 1; }
-            else if head.y >= GRID_H { head.y = 0; }
+            if head.x < 0 {
+                head.x = GRID_W - 1;
+            } else if head.x >= GRID_W {
+                head.x = 0;
+            }
+            if head.y < 0 {
+                head.y = GRID_H - 1;
+            } else if head.y >= GRID_H {
+                head.y = 0;
+            }
 
             // Eat food? (1-cell tolerance for easier gameplay on small screen)
             let dx = (head.x - self.food.x).abs();
@@ -177,18 +219,28 @@ impl App for SnakeGame {
             let sx = OFFSET_X + self.snake[i].x * GRID_SIZE + 1;
             let sy = OFFSET_Y + self.snake[i].y * GRID_SIZE + 1;
             let _ = RoundedRectangle::with_equal_corners(
-                Rectangle::new(EgPoint::new(sx, sy), Size::new((GRID_SIZE - 2) as u32, (GRID_SIZE - 2) as u32)),
+                Rectangle::new(
+                    EgPoint::new(sx, sy),
+                    Size::new((GRID_SIZE - 2) as u32, (GRID_SIZE - 2) as u32),
+                ),
                 Size::new(4, 4),
-            ).into_styled(PrimitiveStyle::with_fill(Rgb565::new(0, 23, 0))).draw(d);
+            )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(0, 23, 0)))
+            .draw(d);
         }
         // Head drawn last = always on top
         {
             let sx = OFFSET_X + self.snake[0].x * GRID_SIZE + 1;
             let sy = OFFSET_Y + self.snake[0].y * GRID_SIZE + 1;
             let _ = RoundedRectangle::with_equal_corners(
-                Rectangle::new(EgPoint::new(sx, sy), Size::new((GRID_SIZE - 2) as u32, (GRID_SIZE - 2) as u32)),
+                Rectangle::new(
+                    EgPoint::new(sx, sy),
+                    Size::new((GRID_SIZE - 2) as u32, (GRID_SIZE - 2) as u32),
+                ),
                 Size::new(4, 4),
-            ).into_styled(PrimitiveStyle::with_fill(Rgb565::GREEN)).draw(d);
+            )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::GREEN))
+            .draw(d);
         }
 
         // Score
@@ -201,10 +253,23 @@ impl App for SnakeGame {
 
 fn format_score<'a>(buf: &'a mut [u8; 16], score: u32) -> &'a str {
     let mut p = 0;
-    for &c in b"SCORE: " { buf[p] = c; p += 1; }
-    if score >= 1000 { buf[p] = b'0' + (score / 1000 % 10) as u8; p += 1; }
-    if score >= 100 { buf[p] = b'0' + (score / 100 % 10) as u8; p += 1; }
-    if score >= 10 { buf[p] = b'0' + (score / 10 % 10) as u8; p += 1; }
-    buf[p] = b'0' + (score % 10) as u8; p += 1;
+    for &c in b"SCORE: " {
+        buf[p] = c;
+        p += 1;
+    }
+    if score >= 1000 {
+        buf[p] = b'0' + (score / 1000 % 10) as u8;
+        p += 1;
+    }
+    if score >= 100 {
+        buf[p] = b'0' + (score / 100 % 10) as u8;
+        p += 1;
+    }
+    if score >= 10 {
+        buf[p] = b'0' + (score / 10 % 10) as u8;
+        p += 1;
+    }
+    buf[p] = b'0' + (score % 10) as u8;
+    p += 1;
     core::str::from_utf8(&buf[..p]).unwrap_or("SCORE: ?")
 }

@@ -958,7 +958,7 @@ fn fmt_date_en<'a>(buf: &'a mut [u8; 18], d: u8, m: u8, y: u8, wd: u8) -> &'a st
         6 => "Sat",
         7 => "Sun",
         _ => "---",
-    };    
+    };
     for b in w_str.as_bytes() {
         buf[p] = *b;
         p += 1;

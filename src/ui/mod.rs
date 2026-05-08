@@ -1,9 +1,9 @@
-pub mod watchface;
 pub mod aod_logo;
-pub mod segments;
-pub mod pages;
 #[cfg(feature = "app-launcher")]
 pub mod launcher;
+pub mod pages;
+pub mod power_page;
+pub mod segments;
 #[cfg(feature = "settings")]
 pub mod t9_keyboard;
-pub mod power_page;
+pub mod watchface;

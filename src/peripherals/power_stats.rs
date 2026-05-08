@@ -17,29 +17,29 @@
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisplayState {
-    Off,      //   0 mA  (AMOLED fully off + MCU in sleep/idle)
-    Aod,      //  ~8 mA  (minimal HH:MM at ~10% brightness on black)
-    Dim,      // ~25 mA  (mid brightness)
-    Bright,   // ~70 mA  (full bright, typical UI content)
+    Off,    //   0 mA  (AMOLED fully off + MCU in sleep/idle)
+    Aod,    //  ~8 mA  (minimal HH:MM at ~10% brightness on black)
+    Dim,    // ~25 mA  (mid brightness)
+    Bright, // ~70 mA  (full bright, typical UI content)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WifiMode {
-    Off,          //   0 mA
-    PowerSave,    // ~20 mA  (STA connected, DTIM sleep between beacons)
-    Active,       // ~90 mA  (actively TX/RX, no PS or during handshake)
+    Off,       //   0 mA
+    PowerSave, // ~20 mA  (STA connected, DTIM sleep between beacons)
+    Active,    // ~90 mA  (actively TX/RX, no PS or during handshake)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PowerStats {
     pub display: Option<DisplayState>,
     pub wifi: Option<WifiMode>,
-    pub ble_on: bool,        // BLE advertising / connected
+    pub ble_on: bool, // BLE advertising / connected
     pub imu_on: bool,
-    pub audio_on: bool,      // codec + PA amplifier
-    pub sd_on: bool,         // SD card active / inserted+powered
-    pub cpu_mhz: u16,        // current CPU clock (reported by main.rs)
-    pub brightness: u8,      // 0x00..0xFF display brightness
+    pub audio_on: bool, // codec + PA amplifier
+    pub sd_on: bool,    // SD card active / inserted+powered
+    pub cpu_mhz: u16,   // current CPU clock (reported by main.rs)
+    pub brightness: u8, // 0x00..0xFF display brightness
     pub battery_mv: u16,
     pub battery_pct: u8,
     pub charging: bool,
@@ -96,10 +96,34 @@ impl PowerStats {
         }
     }
 
-    pub fn ble_ma(&self) -> u16 { if self.ble_on { 15 } else { 0 } }
-    pub fn imu_ma(&self) -> u16 { if self.imu_on { 2 } else { 0 } }
-    pub fn audio_ma(&self) -> u16 { if self.audio_on { 25 } else { 0 } }
-    pub fn sd_ma(&self) -> u16 { if self.sd_on { 30 } else { 0 } }
+    pub fn ble_ma(&self) -> u16 {
+        if self.ble_on {
+            15
+        } else {
+            0
+        }
+    }
+    pub fn imu_ma(&self) -> u16 {
+        if self.imu_on {
+            2
+        } else {
+            0
+        }
+    }
+    pub fn audio_ma(&self) -> u16 {
+        if self.audio_on {
+            25
+        } else {
+            0
+        }
+    }
+    pub fn sd_ma(&self) -> u16 {
+        if self.sd_on {
+            30
+        } else {
+            0
+        }
+    }
 
     pub fn total_ma(&self) -> u16 {
         self.base_ma()

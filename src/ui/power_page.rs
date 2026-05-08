@@ -14,7 +14,7 @@
 //! A companion serial-dump path (one line / second on the UART) is enabled
 //! by `PowerStats::serial_dump_enabled` flag for logging to a laptop.
 
-use embedded_graphics::mono_font::ascii::{FONT_8X13, FONT_10X20};
+use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_8X13};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -44,8 +44,20 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     let green = MonoTextStyle::new(&FONT_8X13, Rgb565::GREEN);
     let red = MonoTextStyle::new(&FONT_8X13, Rgb565::RED);
 
-    Text::with_alignment("POWER MONITOR", Point::new(cx, 38), title, Alignment::Center).draw(d)?;
-    Text::with_alignment("-- live draw --", Point::new(cx, 58), label, Alignment::Center).draw(d)?;
+    Text::with_alignment(
+        "POWER MONITOR",
+        Point::new(cx, 38),
+        title,
+        Alignment::Center,
+    )
+    .draw(d)?;
+    Text::with_alignment(
+        "-- live draw --",
+        Point::new(cx, 58),
+        label,
+        Alignment::Center,
+    )
+    .draw(d)?;
 
     // Prompt-style two-column layout:
     //   left:  label       right: state / mA
@@ -65,22 +77,38 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     Text::new("LCD:", Point::new(left_x, y), label).draw(d)?;
     let disp_text = match stats.display {
         None | Some(DisplayState::Off) => "OFF    0mA",
-        Some(DisplayState::Aod)        => "AOD    8mA",
-        Some(DisplayState::Dim)        => "DIM   25mA",
-        Some(DisplayState::Bright)     => "ON    70mA",
+        Some(DisplayState::Aod) => "AOD    8mA",
+        Some(DisplayState::Dim) => "DIM   25mA",
+        Some(DisplayState::Bright) => "ON    70mA",
     };
-    let disp_style = if matches!(stats.display, Some(DisplayState::Bright)) { yellow_inline() } else { value };
-    Text::with_alignment(disp_text, Point::new(right_x, y), disp_style, Alignment::Right).draw(d)?;
+    let disp_style = if matches!(stats.display, Some(DisplayState::Bright)) {
+        yellow_inline()
+    } else {
+        value
+    };
+    Text::with_alignment(
+        disp_text,
+        Point::new(right_x, y),
+        disp_style,
+        Alignment::Right,
+    )
+    .draw(d)?;
     y += row_h;
 
     // --- WiFi ---
     Text::new("WIFI:", Point::new(left_x, y), label).draw(d)?;
     let (wifi_text, wifi_style) = match stats.wifi {
-        None | Some(WifiMode::Off)        => ("OFF    0mA", green),
-        Some(WifiMode::PowerSave)         => ("PS    20mA", value),
-        Some(WifiMode::Active)            => ("ACT   90mA", red),
+        None | Some(WifiMode::Off) => ("OFF    0mA", green),
+        Some(WifiMode::PowerSave) => ("PS    20mA", value),
+        Some(WifiMode::Active) => ("ACT   90mA", red),
     };
-    Text::with_alignment(wifi_text, Point::new(right_x, y), wifi_style, Alignment::Right).draw(d)?;
+    Text::with_alignment(
+        wifi_text,
+        Point::new(right_x, y),
+        wifi_style,
+        Alignment::Right,
+    )
+    .draw(d)?;
     y += row_h;
 
     // --- BLE ---
@@ -90,7 +118,13 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     } else {
         ("OFF    0mA", green)
     };
-    Text::with_alignment(ble_text, Point::new(right_x, y), ble_style, Alignment::Right).draw(d)?;
+    Text::with_alignment(
+        ble_text,
+        Point::new(right_x, y),
+        ble_style,
+        Alignment::Right,
+    )
+    .draw(d)?;
     y += row_h;
 
     // --- IMU ---
@@ -100,7 +134,13 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     } else {
         ("OFF    0mA", green)
     };
-    Text::with_alignment(imu_text, Point::new(right_x, y), imu_style, Alignment::Right).draw(d)?;
+    Text::with_alignment(
+        imu_text,
+        Point::new(right_x, y),
+        imu_style,
+        Alignment::Right,
+    )
+    .draw(d)?;
     y += row_h;
 
     // --- Audio ---
@@ -140,7 +180,13 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     } else {
         MonoTextStyle::new(&FONT_10X20, Rgb565::RED)
     };
-    Text::with_alignment(t_s, Point::new(right_x, y + 4), total_style, Alignment::Right).draw(d)?;
+    Text::with_alignment(
+        t_s,
+        Point::new(right_x, y + 4),
+        total_style,
+        Alignment::Right,
+    )
+    .draw(d)?;
     y += row_h + 6;
 
     // --- Full-charge runtime (theoretical 100%→0%) ---
@@ -163,13 +209,24 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     } else {
         MonoTextStyle::new(&FONT_10X20, Rgb565::GREEN)
     };
-    Text::with_alignment(rh_s, Point::new(right_x, y + 4), left_style, Alignment::Right).draw(d)?;
+    Text::with_alignment(
+        rh_s,
+        Point::new(right_x, y + 4),
+        left_style,
+        Alignment::Right,
+    )
+    .draw(d)?;
     y += row_h + 4;
 
     // --- Battery raw ---
     Text::new("BATT:", Point::new(left_x, y), label).draw(d)?;
     let mut b_buf = [0u8; 20];
-    let b_s = fmt_batt(&mut b_buf, stats.battery_mv, stats.battery_pct, stats.charging);
+    let b_s = fmt_batt(
+        &mut b_buf,
+        stats.battery_mv,
+        stats.battery_pct,
+        stats.charging,
+    );
     Text::with_alignment(b_s, Point::new(right_x, y), value, Alignment::Right).draw(d)?;
 
     // Reboot button
@@ -178,16 +235,22 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
     let rbt_w: i32 = 100;
     let rbt_h: i32 = 32;
     RoundedRectangle::with_equal_corners(
-        Rectangle::new(Point::new(rbt_x, rbt_y), Size::new(rbt_w as u32, rbt_h as u32)),
+        Rectangle::new(
+            Point::new(rbt_x, rbt_y),
+            Size::new(rbt_w as u32, rbt_h as u32),
+        ),
         Size::new(10, 10),
-    ).into_styled(PrimitiveStyle::with_fill(Rgb565::new(20, 4, 0))).draw(d)?;
+    )
+    .into_styled(PrimitiveStyle::with_fill(Rgb565::new(20, 4, 0)))
+    .draw(d)?;
     let rbt_ts = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
     Text::with_alignment(
         "REBOOT",
         Point::new(cx, rbt_y + 22),
         rbt_ts,
         Alignment::Center,
-    ).draw(d)?;
+    )
+    .draw(d)?;
 
     // Footer hint
     let hint = MonoTextStyle::new(&FONT_8X13, Rgb565::CSS_DARK_GRAY);
@@ -196,7 +259,8 @@ pub fn draw_power_page<D: DrawTarget<Color = Rgb565>>(
         Point::new(cx, H - 18),
         hint,
         Alignment::Center,
-    ).draw(d)?;
+    )
+    .draw(d)?;
 
     Ok(())
 }
@@ -208,8 +272,7 @@ pub fn is_reboot_zone(x: u16, y: u16) -> bool {
     let rbt_y = H - 60;
     let xi = x as i32;
     let yi = y as i32;
-    xi >= rbt_x - 8 && xi <= rbt_x + 100 + 8
-        && yi >= rbt_y - 8 && yi <= rbt_y + 32 + 8
+    xi >= rbt_x - 8 && xi <= rbt_x + 100 + 8 && yi >= rbt_y - 8 && yi <= rbt_y + 32 + 8
 }
 
 // Dummy helper so we can inline a yellow MonoTextStyle above without borrowing
@@ -241,26 +304,41 @@ fn fmt_u16(buf: &mut [u8], pos: &mut usize, mut v: u16) {
 fn fmt_mhz<'a>(buf: &'a mut [u8; 16], mhz: u16, ma: u16) -> &'a str {
     let mut p = 0;
     fmt_u16(buf, &mut p, mhz);
-    for &c in b"MHz " { buf[p] = c; p += 1; }
+    for &c in b"MHz " {
+        buf[p] = c;
+        p += 1;
+    }
     fmt_u16(buf, &mut p, ma);
-    for &c in b"mA" { buf[p] = c; p += 1; }
+    for &c in b"mA" {
+        buf[p] = c;
+        p += 1;
+    }
     core::str::from_utf8(&buf[..p]).unwrap_or("?")
 }
 
 fn fmt_total<'a>(buf: &'a mut [u8; 16], ma: u16) -> &'a str {
     let mut p = 0;
     fmt_u16(buf, &mut p, ma);
-    for &c in b"mA" { buf[p] = c; p += 1; }
+    for &c in b"mA" {
+        buf[p] = c;
+        p += 1;
+    }
     core::str::from_utf8(&buf[..p]).unwrap_or("?")
 }
 
 fn fmt_runtime_full<'a>(buf: &'a mut [u8; 20], hours: u16) -> &'a str {
     let mut p = 0;
     if hours >= 999 {
-        for &c in b"--" { buf[p] = c; p += 1; }
+        for &c in b"--" {
+            buf[p] = c;
+            p += 1;
+        }
     } else {
         fmt_u16(buf, &mut p, hours);
-        for &c in b"h (300mAh)" { buf[p] = c; p += 1; }
+        for &c in b"h (300mAh)" {
+            buf[p] = c;
+            p += 1;
+        }
     }
     core::str::from_utf8(&buf[..p]).unwrap_or("?h")
 }
@@ -268,13 +346,21 @@ fn fmt_runtime_full<'a>(buf: &'a mut [u8; 20], hours: u16) -> &'a str {
 fn fmt_remaining<'a>(buf: &'a mut [u8; 20], hours: u16, pct: u8) -> &'a str {
     let mut p = 0;
     if hours >= 999 {
-        for &c in b"--" { buf[p] = c; p += 1; }
+        for &c in b"--" {
+            buf[p] = c;
+            p += 1;
+        }
     } else {
-        buf[p] = b'~'; p += 1;
+        buf[p] = b'~';
+        p += 1;
         fmt_u16(buf, &mut p, hours);
-        for &c in b"h @" { buf[p] = c; p += 1; }
+        for &c in b"h @" {
+            buf[p] = c;
+            p += 1;
+        }
         fmt_u16(buf, &mut p, pct as u16);
-        buf[p] = b'%'; p += 1;
+        buf[p] = b'%';
+        p += 1;
     }
     core::str::from_utf8(&buf[..p]).unwrap_or("?h")
 }
@@ -282,11 +368,20 @@ fn fmt_remaining<'a>(buf: &'a mut [u8; 20], hours: u16, pct: u8) -> &'a str {
 fn fmt_batt<'a>(buf: &'a mut [u8; 20], mv: u16, pct: u8, chg: bool) -> &'a str {
     let mut p = 0;
     fmt_u16(buf, &mut p, pct as u16);
-    for &c in b"% " { buf[p] = c; p += 1; }
+    for &c in b"% " {
+        buf[p] = c;
+        p += 1;
+    }
     fmt_u16(buf, &mut p, mv);
-    for &c in b"mV" { buf[p] = c; p += 1; }
+    for &c in b"mV" {
+        buf[p] = c;
+        p += 1;
+    }
     if chg {
-        for &c in b" CHG" { buf[p] = c; p += 1; }
+        for &c in b" CHG" {
+            buf[p] = c;
+            p += 1;
+        }
     }
     core::str::from_utf8(&buf[..p]).unwrap_or("?")
 }

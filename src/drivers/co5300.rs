@@ -192,11 +192,7 @@ impl DrawTarget for Co5300Display<'_> {
         Ok(())
     }
 
-    fn fill_contiguous<I>(
-        &mut self,
-        area: &Rectangle,
-        colors: I,
-    ) -> Result<(), Self::Error>
+    fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Self::Color>,
     {
@@ -218,7 +214,11 @@ impl DrawTarget for Co5300Display<'_> {
 
         // CO5300 requires minimum 2-line writes.
         // If height is 1, double it and duplicate each row.
-        let actual_h = if area.size.height < 2 { 2 } else { area.size.height as u16 };
+        let actual_h = if area.size.height < 2 {
+            2
+        } else {
+            area.size.height as u16
+        };
         let needs_row_dup = area.size.height < 2;
 
         self.set_addr_window(
@@ -263,11 +263,7 @@ impl DrawTarget for Co5300Display<'_> {
         Ok(())
     }
 
-    fn fill_solid(
-        &mut self,
-        area: &Rectangle,
-        color: Self::Color,
-    ) -> Result<(), Self::Error> {
+    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let area = area.intersection(&Rectangle::new(
             Point::zero(),
             Size::new(self.width as u32, self.height as u32),
@@ -284,7 +280,8 @@ impl DrawTarget for Co5300Display<'_> {
             area.size.width as u16,
             area.size.height as u16,
         );
-        self.bus.write_repeat(raw, area.size.width * area.size.height);
+        self.bus
+            .write_repeat(raw, area.size.width * area.size.height);
         Ok(())
     }
 }

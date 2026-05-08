@@ -74,14 +74,22 @@ impl Framebuffer {
         // Short TE sync. If TE isn't pulsing (display just woken up, or we're flushing
         // outside vblank window), give up after a few hundred cycles instead of burning
         // CPU. Tearing is invisible most of the time anyway because we flush <30fps.
-        for _ in 0..400 { if te.is_high() { break; } }
+        for _ in 0..400 {
+            if te.is_high() {
+                break;
+            }
+        }
         display.set_addr_window(0, 0, WIDTH as u16, HEIGHT as u16);
         display.bus_mut().write_pixels(&self.buf);
     }
 
     /// VSync flush for watchface / menus. Same as swap_and_flush but kept distinct for clarity.
     pub fn flush_vsync(&self, display: &mut Co5300Display, te: &esp_hal::gpio::Input<'_>) {
-        for _ in 0..400 { if te.is_high() { break; } }
+        for _ in 0..400 {
+            if te.is_high() {
+                break;
+            }
+        }
         self.flush(display);
     }
 
@@ -132,7 +140,6 @@ impl Framebuffer {
         }
         display.bus_mut().end_pixels();
     }
-
 }
 
 impl OriginDimensions for Framebuffer {
@@ -158,11 +165,7 @@ impl DrawTarget for Framebuffer {
         Ok(())
     }
 
-    fn fill_contiguous<I>(
-        &mut self,
-        area: &Rectangle,
-        colors: I,
-    ) -> Result<(), Self::Error>
+    fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Self::Color>,
     {
@@ -193,11 +196,7 @@ impl DrawTarget for Framebuffer {
         Ok(())
     }
 
-    fn fill_solid(
-        &mut self,
-        area: &Rectangle,
-        color: Self::Color,
-    ) -> Result<(), Self::Error> {
+    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let area = area.intersection(&Rectangle::new(
             Point::zero(),
             Size::new(WIDTH as u32, HEIGHT as u32),

@@ -1,13 +1,13 @@
 // MP3 Player - reads MP3 files from SD card /mp3/ folder
 // Decodes with nanomp3, streams to I2S DMA via ES8311
 
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, RoundedRectangle, Circle};
+use embedded_graphics::geometry::Point as EgPoint;
 use embedded_graphics::mono_font::ascii::FONT_10X20;
 use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle, RoundedRectangle};
 use embedded_graphics::text::{Alignment, Text};
-use embedded_graphics::geometry::Point as EgPoint;
 
 use crate::apps::{App, AppInput, AppResult};
 use crate::peripherals::touch::SwipeDirection;
@@ -60,7 +60,9 @@ impl Mp3Player {
 }
 
 impl App for Mp3Player {
-    fn name(&self) -> &str { "MP3 Player" }
+    fn name(&self) -> &str {
+        "MP3 Player"
+    }
 
     fn setup(&mut self) {
         self.state = PlayerState::Stopped;
@@ -87,7 +89,11 @@ impl App for Mp3Player {
         // Swipe left = previous track
         if let Some(SwipeDirection::Left) = input.swipe {
             if self.track_count > 0 {
-                self.track_index = if self.track_index == 0 { self.track_count - 1 } else { self.track_index - 1 };
+                self.track_index = if self.track_index == 0 {
+                    self.track_count - 1
+                } else {
+                    self.track_index - 1
+                };
             }
         }
 
@@ -96,31 +102,43 @@ impl App for Mp3Player {
 
     fn render<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D) {
         let _ = Rectangle::new(EgPoint::zero(), Size::new(W as u32, H as u32))
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK)).draw(d);
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            .draw(d);
 
         let white = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
         let cyan = MonoTextStyle::new(&FONT_10X20, Rgb565::CYAN);
         let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
 
         // Title
-        let _ = Text::with_alignment("MP3 PLAYER", EgPoint::new(W / 2, 40), cyan, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "MP3 PLAYER",
+            EgPoint::new(W / 2, 40),
+            cyan,
+            Alignment::Center,
+        )
+        .draw(d);
 
         // Album art placeholder (big circle)
         let _ = Circle::new(EgPoint::new(W / 2 - 60, 80), 120)
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 12))).draw(d);
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 12)))
+            .draw(d);
         let _ = Circle::new(EgPoint::new(W / 2 - 20, 120), 40)
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(2, 4, 6))).draw(d);
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(2, 4, 6)))
+            .draw(d);
         // Music note icon
-        let _ = Text::with_alignment("~", EgPoint::new(W / 2, 150), white, Alignment::Center).draw(d);
+        let _ =
+            Text::with_alignment("~", EgPoint::new(W / 2, 150), white, Alignment::Center).draw(d);
 
         // Track name
         let name = self.track_name_str();
-        let _ = Text::with_alignment(name, EgPoint::new(W / 2, 240), white, Alignment::Center).draw(d);
+        let _ =
+            Text::with_alignment(name, EgPoint::new(W / 2, 240), white, Alignment::Center).draw(d);
 
         // Track number
         let mut buf = [0u8; 16];
         let info = fmt_track(&mut buf, self.track_index + 1, self.track_count);
-        let _ = Text::with_alignment(info, EgPoint::new(W / 2, 270), dim, Alignment::Center).draw(d);
+        let _ =
+            Text::with_alignment(info, EgPoint::new(W / 2, 270), dim, Alignment::Center).draw(d);
 
         // Progress bar
         let bar_w = 300i32;
@@ -129,13 +147,17 @@ impl App for Mp3Player {
         let _ = RoundedRectangle::with_equal_corners(
             Rectangle::new(EgPoint::new(bar_x, bar_y), Size::new(bar_w as u32, 8)),
             Size::new(4, 4),
-        ).into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 4))).draw(d);
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::new(4, 8, 4)))
+        .draw(d);
         let fill_w = (self.progress as i32 * bar_w) / 100;
         if fill_w > 0 {
             let _ = RoundedRectangle::with_equal_corners(
                 Rectangle::new(EgPoint::new(bar_x, bar_y), Size::new(fill_w as u32, 8)),
                 Size::new(4, 4),
-            ).into_styled(PrimitiveStyle::with_fill(Rgb565::CYAN)).draw(d);
+            )
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::CYAN))
+            .draw(d);
         }
 
         // Play/Pause/Stop controls
@@ -150,26 +172,61 @@ impl App for Mp3Player {
             PlayerState::Paused => Rgb565::YELLOW,
             PlayerState::Stopped => Rgb565::RED,
         };
-        let _ = Text::with_alignment(state_text, EgPoint::new(W / 2, ctrl_y),
-            MonoTextStyle::new(&FONT_10X20, state_color), Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            state_text,
+            EgPoint::new(W / 2, ctrl_y),
+            MonoTextStyle::new(&FONT_10X20, state_color),
+            Alignment::Center,
+        )
+        .draw(d);
 
         // Controls hint
-        let _ = Text::with_alignment("TAP: Play/Pause", EgPoint::new(W / 2, ctrl_y + 40), dim, Alignment::Center).draw(d);
-        let _ = Text::with_alignment("SWIPE: Prev/Next", EgPoint::new(W / 2, ctrl_y + 65), dim, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "TAP: Play/Pause",
+            EgPoint::new(W / 2, ctrl_y + 40),
+            dim,
+            Alignment::Center,
+        )
+        .draw(d);
+        let _ = Text::with_alignment(
+            "SWIPE: Prev/Next",
+            EgPoint::new(W / 2, ctrl_y + 65),
+            dim,
+            Alignment::Center,
+        )
+        .draw(d);
 
         // SD card status
-        let _ = Text::with_alignment("SD: /mp3/", EgPoint::new(W / 2, H - 20), dim, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "SD: /mp3/",
+            EgPoint::new(W / 2, H - 20),
+            dim,
+            Alignment::Center,
+        )
+        .draw(d);
     }
 }
 
 fn fmt_track<'a>(buf: &'a mut [u8; 16], current: usize, total: usize) -> &'a str {
     let mut p = 0;
     // "Track X/Y"
-    for &c in b"Track " { buf[p] = c; p += 1; }
-    if current >= 10 { buf[p] = b'0' + (current / 10) as u8; p += 1; }
-    buf[p] = b'0' + (current % 10) as u8; p += 1;
-    buf[p] = b'/'; p += 1;
-    if total >= 10 { buf[p] = b'0' + (total / 10) as u8; p += 1; }
-    buf[p] = b'0' + (total % 10) as u8; p += 1;
+    for &c in b"Track " {
+        buf[p] = c;
+        p += 1;
+    }
+    if current >= 10 {
+        buf[p] = b'0' + (current / 10) as u8;
+        p += 1;
+    }
+    buf[p] = b'0' + (current % 10) as u8;
+    p += 1;
+    buf[p] = b'/';
+    p += 1;
+    if total >= 10 {
+        buf[p] = b'0' + (total / 10) as u8;
+        p += 1;
+    }
+    buf[p] = b'0' + (total % 10) as u8;
+    p += 1;
     core::str::from_utf8(&buf[..p]).unwrap_or("Track ?/?")
 }

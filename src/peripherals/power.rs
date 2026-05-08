@@ -17,10 +17,10 @@ const REG_VBUS_H: u8 = 0x38;
 const REG_VBUS_L: u8 = 0x39;
 const REG_VSYS_H: u8 = 0x3A;
 const REG_VSYS_L: u8 = 0x3B;
-const REG_DC_ONOFF: u8 = 0x80;     // DC output on/off + DVM control
-const REG_DC_VOL0: u8 = 0x82;      // DCDC1 voltage setting
-const REG_LDO_ONOFF0: u8 = 0x90;   // ALDO1-4 on/off control
-const REG_LDO_VOL0: u8 = 0x92;     // ALDO1 voltage setting
+const REG_DC_ONOFF: u8 = 0x80; // DC output on/off + DVM control
+const REG_DC_VOL0: u8 = 0x82; // DCDC1 voltage setting
+const REG_LDO_ONOFF0: u8 = 0x90; // ALDO1-4 on/off control
+const REG_LDO_VOL0: u8 = 0x92; // ALDO1 voltage setting
 const REG_ADC_ENABLE: u8 = 0x30;
 const REG_IRQ_ENABLE0: u8 = 0x40;
 const REG_IRQ_ENABLE1: u8 = 0x41;
@@ -153,11 +153,11 @@ impl<I: I2c> Axp2101Power<I> {
     /// Disable power-hungry rails and ADC before deep sleep.
     pub fn power_down_for_sleep(&mut self) -> Result<(), I::Error> {
         // Turn off all ADCs (saves ~1-2 mA)
-        // We MUST NOT turn off ALDO1 here, as it powers the pull-up resistors 
-        // for the I2C bus. Turning it off will permanently hang the I2C bus 
+        // We MUST NOT turn off ALDO1 here, as it powers the pull-up resistors
+        // for the I2C bus. Turning it off will permanently hang the I2C bus
         // when the ESP32 wakes up and tries to re-initialize the AXP2101!
         self.write_reg(REG_ADC_ENABLE, 0x00)?;
-        
+
         Ok(())
     }
 }

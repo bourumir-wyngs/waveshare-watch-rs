@@ -2,13 +2,13 @@
 // Configurable buttons that send HTTP requests when tapped
 // Perfect for Home Assistant, domotics, custom APIs
 
+use embedded_graphics::geometry::Point as EgPoint;
+use embedded_graphics::mono_font::ascii::FONT_10X20;
+use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, RoundedRectangle};
-use embedded_graphics::mono_font::ascii::FONT_10X20;
-use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::text::{Alignment, Text};
-use embedded_graphics::geometry::Point as EgPoint;
 
 use crate::apps::{App, AppInput, AppResult};
 use crate::peripherals::touch::SwipeDirection;
@@ -48,11 +48,14 @@ pub struct ApiButton {
 impl ApiButton {
     pub const fn empty() -> Self {
         Self {
-            name: [0; 16], name_len: 0,
-            url: [0; 96], url_len: 0,
+            name: [0; 16],
+            name_len: 0,
+            url: [0; 96],
+            url_len: 0,
             method: HttpMethod::Get,
             state: ButtonState::Idle,
-            last_response: [0; 32], response_len: 0,
+            last_response: [0; 32],
+            response_len: 0,
         }
     }
 
@@ -99,18 +102,42 @@ impl SmartHomeApp {
     pub fn new() -> Self {
         // Default buttons - user can customize these
         let mut app = Self {
-            buttons: [ApiButton::empty(), ApiButton::empty(), ApiButton::empty(), ApiButton::empty(),
-                      ApiButton::empty(), ApiButton::empty(), ApiButton::empty(), ApiButton::empty()],
+            buttons: [
+                ApiButton::empty(),
+                ApiButton::empty(),
+                ApiButton::empty(),
+                ApiButton::empty(),
+                ApiButton::empty(),
+                ApiButton::empty(),
+                ApiButton::empty(),
+                ApiButton::empty(),
+            ],
             count: 0,
             scroll_offset: 0,
             selected: None,
         };
 
         // Pre-configured example buttons
-        app.add_button("Salon Light", "http://192.168.1.10/api/toggle/1", HttpMethod::Get);
-        app.add_button("Chambre", "http://192.168.1.10/api/toggle/2", HttpMethod::Get);
-        app.add_button("Porte", "http://192.168.1.10/api/door/lock", HttpMethod::Post);
-        app.add_button("Temperature", "http://192.168.1.10/api/temp", HttpMethod::Get);
+        app.add_button(
+            "Salon Light",
+            "http://192.168.1.10/api/toggle/1",
+            HttpMethod::Get,
+        );
+        app.add_button(
+            "Chambre",
+            "http://192.168.1.10/api/toggle/2",
+            HttpMethod::Get,
+        );
+        app.add_button(
+            "Porte",
+            "http://192.168.1.10/api/door/lock",
+            HttpMethod::Post,
+        );
+        app.add_button(
+            "Temperature",
+            "http://192.168.1.10/api/temp",
+            HttpMethod::Get,
+        );
         app.add_button("TV", "http://192.168.1.10/api/tv/toggle", HttpMethod::Get);
         app.add_button("Custom API", "http://example.com/api", HttpMethod::Get);
 
@@ -127,7 +154,11 @@ impl SmartHomeApp {
     /// Call this with the HTTP response after sending a request
     pub fn set_response(&mut self, idx: usize, response: &str, success: bool) {
         if idx < self.count {
-            self.buttons[idx].state = if success { ButtonState::Success } else { ButtonState::Error };
+            self.buttons[idx].state = if success {
+                ButtonState::Success
+            } else {
+                ButtonState::Error
+            };
             let bytes = response.as_bytes();
             let len = bytes.len().min(32);
             self.buttons[idx].last_response[..len].copy_from_slice(&bytes[..len]);
@@ -140,7 +171,8 @@ impl SmartHomeApp {
         if let Some(idx) = self.selected.take() {
             if idx < self.count {
                 self.buttons[idx].state = ButtonState::Sending;
-                let url = core::str::from_utf8(&self.buttons[idx].url[..self.buttons[idx].url_len]).unwrap_or("");
+                let url = core::str::from_utf8(&self.buttons[idx].url[..self.buttons[idx].url_len])
+                    .unwrap_or("");
                 return Some((idx, url));
             }
         }
@@ -149,7 +181,9 @@ impl SmartHomeApp {
 }
 
 impl App for SmartHomeApp {
-    fn name(&self) -> &str { "Smart Home" }
+    fn name(&self) -> &str {
+        "Smart Home"
+    }
 
     fn setup(&mut self) {
         self.scroll_offset = 0;
@@ -189,17 +223,26 @@ impl App for SmartHomeApp {
 
     fn render<D: DrawTarget<Color = Rgb565>>(&self, d: &mut D) {
         let _ = Rectangle::new(EgPoint::zero(), Size::new(W as u32, H as u32))
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK)).draw(d);
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            .draw(d);
 
         let title = MonoTextStyle::new(&FONT_10X20, Rgb565::CYAN);
         let white = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
         let dim = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
 
-        let _ = Text::with_alignment("SMART HOME", EgPoint::new(W / 2, 35), title, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "SMART HOME",
+            EgPoint::new(W / 2, 35),
+            title,
+            Alignment::Center,
+        )
+        .draw(d);
 
         for i in 0..self.count {
             let y = 55 + i as i32 * (BTN_H + BTN_GAP) - self.scroll_offset;
-            if y + BTN_H < 0 || y > H { continue; }
+            if y + BTN_H < 0 || y > H {
+                continue;
+            }
 
             let btn = &self.buttons[i];
 
@@ -212,9 +255,14 @@ impl App for SmartHomeApp {
             };
 
             let _ = RoundedRectangle::with_equal_corners(
-                Rectangle::new(EgPoint::new(BTN_MARGIN, y), Size::new((W - 2 * BTN_MARGIN) as u32, BTN_H as u32)),
+                Rectangle::new(
+                    EgPoint::new(BTN_MARGIN, y),
+                    Size::new((W - 2 * BTN_MARGIN) as u32, BTN_H as u32),
+                ),
                 Size::new(10, 10),
-            ).into_styled(PrimitiveStyle::with_fill(bg)).draw(d);
+            )
+            .into_styled(PrimitiveStyle::with_fill(bg))
+            .draw(d);
 
             // Method indicator
             let method_str = match btn.method {
@@ -224,7 +272,13 @@ impl App for SmartHomeApp {
             let _ = Text::new(method_str, EgPoint::new(BTN_MARGIN + 10, y + 22), dim).draw(d);
 
             // Button name
-            let _ = Text::with_alignment(btn.name_str(), EgPoint::new(W / 2, y + 22), white, Alignment::Center).draw(d);
+            let _ = Text::with_alignment(
+                btn.name_str(),
+                EgPoint::new(W / 2, y + 22),
+                white,
+                Alignment::Center,
+            )
+            .draw(d);
 
             // Response/status
             let resp = btn.response_str();
@@ -234,12 +288,23 @@ impl App for SmartHomeApp {
                     ButtonState::Error => Rgb565::RED,
                     _ => Rgb565::YELLOW,
                 };
-                let _ = Text::with_alignment(resp, EgPoint::new(W - BTN_MARGIN - 10, y + 22),
-                    MonoTextStyle::new(&FONT_10X20, resp_color), Alignment::Right).draw(d);
+                let _ = Text::with_alignment(
+                    resp,
+                    EgPoint::new(W - BTN_MARGIN - 10, y + 22),
+                    MonoTextStyle::new(&FONT_10X20, resp_color),
+                    Alignment::Right,
+                )
+                .draw(d);
             }
         }
 
         // Footer
-        let _ = Text::with_alignment("TAP to send request", EgPoint::new(W / 2, H - 20), dim, Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            "TAP to send request",
+            EgPoint::new(W / 2, H - 20),
+            dim,
+            Alignment::Center,
+        )
+        .draw(d);
     }
 }

@@ -1,13 +1,13 @@
 // 2048 Game - ported from C++ Game2048.cpp
 // 4x4 grid, swipe to merge tiles
 
+use embedded_graphics::geometry::Point as EgPoint;
+use embedded_graphics::mono_font::ascii::FONT_10X20;
+use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle, RoundedRectangle};
-use embedded_graphics::mono_font::ascii::FONT_10X20;
-use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::text::{Alignment, Text};
-use embedded_graphics::geometry::Point as EgPoint;
 
 use crate::apps::{App, AppInput, AppResult};
 use crate::peripherals::touch::SwipeDirection;
@@ -28,7 +28,13 @@ pub struct Game2048 {
 
 impl Game2048 {
     pub fn new() -> Self {
-        let mut g = Self { tiles: [[0; GRID]; GRID], score: 0, game_over: false, rng: 54321, moved: false };
+        let mut g = Self {
+            tiles: [[0; GRID]; GRID],
+            score: 0,
+            game_over: false,
+            rng: 54321,
+            moved: false,
+        };
         g.spawn_tile();
         g.spawn_tile();
         g
@@ -66,7 +72,11 @@ impl Game2048 {
         let mut j = 0;
         for i in 0..GRID {
             if row[i] != 0 {
-                if j != i { row[j] = row[i]; row[i] = 0; moved = true; }
+                if j != i {
+                    row[j] = row[i];
+                    row[i] = 0;
+                    moved = true;
+                }
                 j += 1;
             }
         }
@@ -83,7 +93,10 @@ impl Game2048 {
         j = 0;
         for i in 0..GRID {
             if row[i] != 0 {
-                if j != i { row[j] = row[i]; row[i] = 0; }
+                if j != i {
+                    row[j] = row[i];
+                    row[i] = 0;
+                }
                 j += 1;
             }
         }
@@ -98,7 +111,9 @@ impl Game2048 {
                     let mut row = self.tiles[r];
                     let (m, p) = Self::slide_row(&mut row);
                     self.tiles[r] = row;
-                    if m { self.moved = true; }
+                    if m {
+                        self.moved = true;
+                    }
                     self.score += p;
                 }
             }
@@ -109,33 +124,49 @@ impl Game2048 {
                     let (m, p) = Self::slide_row(&mut row);
                     row.reverse();
                     self.tiles[r] = row;
-                    if m { self.moved = true; }
+                    if m {
+                        self.moved = true;
+                    }
                     self.score += p;
                 }
             }
             SwipeDirection::Up => {
                 for c in 0..GRID {
                     let mut col = [0u16; GRID];
-                    for r in 0..GRID { col[r] = self.tiles[r][c]; }
+                    for r in 0..GRID {
+                        col[r] = self.tiles[r][c];
+                    }
                     let (m, p) = Self::slide_row(&mut col);
-                    for r in 0..GRID { self.tiles[r][c] = col[r]; }
-                    if m { self.moved = true; }
+                    for r in 0..GRID {
+                        self.tiles[r][c] = col[r];
+                    }
+                    if m {
+                        self.moved = true;
+                    }
                     self.score += p;
                 }
             }
             SwipeDirection::Down => {
                 for c in 0..GRID {
                     let mut col = [0u16; GRID];
-                    for r in 0..GRID { col[r] = self.tiles[GRID - 1 - r][c]; }
+                    for r in 0..GRID {
+                        col[r] = self.tiles[GRID - 1 - r][c];
+                    }
                     let (m, p) = Self::slide_row(&mut col);
-                    for r in 0..GRID { self.tiles[GRID - 1 - r][c] = col[r]; }
-                    if m { self.moved = true; }
+                    for r in 0..GRID {
+                        self.tiles[GRID - 1 - r][c] = col[r];
+                    }
+                    if m {
+                        self.moved = true;
+                    }
                     self.score += p;
                 }
             }
             _ => {}
         }
-        if self.moved { self.spawn_tile(); }
+        if self.moved {
+            self.spawn_tile();
+        }
     }
 
     fn tile_color(val: u16) -> Rgb565 {
@@ -157,7 +188,9 @@ impl Game2048 {
 }
 
 impl App for Game2048 {
-    fn name(&self) -> &str { "2048" }
+    fn name(&self) -> &str {
+        "2048"
+    }
     fn setup(&mut self) {
         self.tiles = [[0; GRID]; GRID];
         self.score = 0;
@@ -183,7 +216,13 @@ impl App for Game2048 {
         // Score
         let mut buf = [0u8; 16];
         let s = fmt_num(&mut buf, b"SCORE:", self.score);
-        let _ = Text::with_alignment(s, EgPoint::new(205, 35), MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE), Alignment::Center).draw(d);
+        let _ = Text::with_alignment(
+            s,
+            EgPoint::new(205, 35),
+            MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE),
+            Alignment::Center,
+        )
+        .draw(d);
 
         // Board
         for r in 0..GRID {
@@ -193,17 +232,31 @@ impl App for Game2048 {
                 let val = self.tiles[r][c];
                 let color = Self::tile_color(val);
                 let _ = RoundedRectangle::with_equal_corners(
-                    Rectangle::new(EgPoint::new(x, y), Size::new(CELL_SIZE as u32, CELL_SIZE as u32)),
+                    Rectangle::new(
+                        EgPoint::new(x, y),
+                        Size::new(CELL_SIZE as u32, CELL_SIZE as u32),
+                    ),
                     Size::new(8, 8),
-                ).into_styled(PrimitiveStyle::with_fill(color)).draw(d);
+                )
+                .into_styled(PrimitiveStyle::with_fill(color))
+                .draw(d);
 
                 if val > 0 {
                     let mut nbuf = [0u8; 6];
                     let ns = fmt_tile(&mut nbuf, val);
                     // Dark text on light tiles, white on dark tiles
-                    let txt_color = if val <= 4 { Rgb565::BLACK } else { Rgb565::WHITE };
-                    let _ = Text::with_alignment(ns, EgPoint::new(x + CELL_SIZE / 2, y + CELL_SIZE / 2 + 5),
-                        MonoTextStyle::new(&FONT_10X20, txt_color), Alignment::Center).draw(d);
+                    let txt_color = if val <= 4 {
+                        Rgb565::BLACK
+                    } else {
+                        Rgb565::WHITE
+                    };
+                    let _ = Text::with_alignment(
+                        ns,
+                        EgPoint::new(x + CELL_SIZE / 2, y + CELL_SIZE / 2 + 5),
+                        MonoTextStyle::new(&FONT_10X20, txt_color),
+                        Alignment::Center,
+                    )
+                    .draw(d);
                 }
             }
         }
@@ -212,20 +265,46 @@ impl App for Game2048 {
 
 fn fmt_num<'a>(buf: &'a mut [u8; 16], prefix: &[u8], val: u32) -> &'a str {
     let mut p = 0;
-    for &c in prefix { buf[p] = c; p += 1; }
-    if val >= 10000 { buf[p] = b'0' + (val / 10000 % 10) as u8; p += 1; }
-    if val >= 1000 { buf[p] = b'0' + (val / 1000 % 10) as u8; p += 1; }
-    if val >= 100 { buf[p] = b'0' + (val / 100 % 10) as u8; p += 1; }
-    if val >= 10 { buf[p] = b'0' + (val / 10 % 10) as u8; p += 1; }
-    buf[p] = b'0' + (val % 10) as u8; p += 1;
+    for &c in prefix {
+        buf[p] = c;
+        p += 1;
+    }
+    if val >= 10000 {
+        buf[p] = b'0' + (val / 10000 % 10) as u8;
+        p += 1;
+    }
+    if val >= 1000 {
+        buf[p] = b'0' + (val / 1000 % 10) as u8;
+        p += 1;
+    }
+    if val >= 100 {
+        buf[p] = b'0' + (val / 100 % 10) as u8;
+        p += 1;
+    }
+    if val >= 10 {
+        buf[p] = b'0' + (val / 10 % 10) as u8;
+        p += 1;
+    }
+    buf[p] = b'0' + (val % 10) as u8;
+    p += 1;
     core::str::from_utf8(&buf[..p]).unwrap_or("?")
 }
 
 fn fmt_tile<'a>(buf: &'a mut [u8; 6], val: u16) -> &'a str {
     let mut p = 0;
-    if val >= 1000 { buf[p] = b'0' + (val / 1000 % 10) as u8; p += 1; }
-    if val >= 100 { buf[p] = b'0' + (val / 100 % 10) as u8; p += 1; }
-    if val >= 10 { buf[p] = b'0' + (val / 10 % 10) as u8; p += 1; }
-    buf[p] = b'0' + (val % 10) as u8; p += 1;
+    if val >= 1000 {
+        buf[p] = b'0' + (val / 1000 % 10) as u8;
+        p += 1;
+    }
+    if val >= 100 {
+        buf[p] = b'0' + (val / 100 % 10) as u8;
+        p += 1;
+    }
+    if val >= 10 {
+        buf[p] = b'0' + (val / 10 % 10) as u8;
+        p += 1;
+    }
+    buf[p] = b'0' + (val % 10) as u8;
+    p += 1;
     core::str::from_utf8(&buf[..p]).unwrap_or("?")
 }

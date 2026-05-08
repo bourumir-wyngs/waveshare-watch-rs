@@ -30,8 +30,7 @@ use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::rtc_cntl::{
     sleep::{Ext0WakeupSource, TimerWakeupSource, WakeupLevel},
-    wakeup_cause,
-    Rtc as EspRtc,
+    wakeup_cause, Rtc as EspRtc,
 };
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
@@ -164,7 +163,8 @@ async fn ntp_sync(
             );
 
             // Set RTC
-            let weekday = time_manager::weekday_from_date(year as i32, month as u8, day as u8).unwrap_or(0);
+            let weekday =
+                time_manager::weekday_from_date(year as i32, month as u8, day as u8).unwrap_or(0);
             let mut dt = crate::peripherals::rtc::DateTime::new(
                 (year - 2000) as u8,
                 month as u8,
@@ -260,8 +260,8 @@ fn load_audio_clip_i2s(buf: &mut [u8; AUDIO_DMA_BUFFER_BYTES]) {
         if dst + 3 >= buf.len() {
             break;
         }
-        let sample = ((mono as i32) * AUDIO_SAMPLE_GAIN)
-            .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let sample =
+            ((mono as i32) * AUDIO_SAMPLE_GAIN).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         let bytes = sample.to_le_bytes();
         buf[dst] = bytes[0];
         buf[dst + 1] = bytes[1];
@@ -365,8 +365,16 @@ async fn main(_spawner: Spawner) {
     {
         // START
         {
-            let mut sda_out = Output::new(peripherals.GPIO15.reborrow(), Level::High, OutputConfig::default());
-            let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::High, OutputConfig::default());
+            let mut sda_out = Output::new(
+                peripherals.GPIO15.reborrow(),
+                Level::High,
+                OutputConfig::default(),
+            );
+            let mut scl_out = Output::new(
+                peripherals.GPIO14.reborrow(),
+                Level::High,
+                OutputConfig::default(),
+            );
             delay.delay_micros(50);
             sda_out.set_low();
             delay.delay_micros(10);
@@ -379,10 +387,18 @@ async fn main(_spawner: Spawner) {
                 for i in (0..8).rev() {
                     let _sda_out = Output::new(
                         peripherals.GPIO15.reborrow(),
-                        if ($byte & (1 << i)) != 0 { Level::High } else { Level::Low },
+                        if ($byte & (1 << i)) != 0 {
+                            Level::High
+                        } else {
+                            Level::Low
+                        },
                         OutputConfig::default(),
                     );
-                    let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::Low, OutputConfig::default());
+                    let mut scl_out = Output::new(
+                        peripherals.GPIO14.reborrow(),
+                        Level::Low,
+                        OutputConfig::default(),
+                    );
                     delay.delay_micros(10);
                     scl_out.set_high();
                     delay.delay_micros(10);
@@ -392,7 +408,11 @@ async fn main(_spawner: Spawner) {
                 // ACK
                 {
                     let _sda_in = Input::new(peripherals.GPIO15.reborrow(), InputConfig::default());
-                    let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::Low, OutputConfig::default());
+                    let mut scl_out = Output::new(
+                        peripherals.GPIO14.reborrow(),
+                        Level::Low,
+                        OutputConfig::default(),
+                    );
                     delay.delay_micros(10);
                     scl_out.set_high();
                     delay.delay_micros(10);
@@ -400,7 +420,11 @@ async fn main(_spawner: Spawner) {
                     delay.delay_micros(10);
                 }
                 {
-                    let _sda_out = Output::new(peripherals.GPIO15.reborrow(), Level::Low, OutputConfig::default());
+                    let _sda_out = Output::new(
+                        peripherals.GPIO15.reborrow(),
+                        Level::Low,
+                        OutputConfig::default(),
+                    );
                 }
             };
         }
@@ -411,8 +435,16 @@ async fn main(_spawner: Spawner) {
 
         // STOP
         {
-            let mut sda_out = Output::new(peripherals.GPIO15.reborrow(), Level::Low, OutputConfig::default());
-            let mut scl_out = Output::new(peripherals.GPIO14.reborrow(), Level::Low, OutputConfig::default());
+            let mut sda_out = Output::new(
+                peripherals.GPIO15.reborrow(),
+                Level::Low,
+                OutputConfig::default(),
+            );
+            let mut scl_out = Output::new(
+                peripherals.GPIO14.reborrow(),
+                Level::Low,
+                OutputConfig::default(),
+            );
             delay.delay_micros(10);
             scl_out.set_high();
             delay.delay_micros(10);
@@ -784,12 +816,9 @@ async fn main(_spawner: Spawner) {
             $tail_silence_repeats:expr
         ) => {{
             if ensure_audio!() {
-                if let (Some(codec), Some(tx), Some(clip), Some(silence)) = (
-                    audio_codec.as_mut(),
-                    i2s_tx.as_mut(),
-                    clip_buf,
-                    silence_buf,
-                ) {
+                if let (Some(codec), Some(tx), Some(clip), Some(silence)) =
+                    (audio_codec.as_mut(), i2s_tx.as_mut(), clip_buf, silence_buf)
+                {
                     println!("[AUDIO] {}", $label);
                     let _ = codec.unmute();
                     pa_en.set_high();

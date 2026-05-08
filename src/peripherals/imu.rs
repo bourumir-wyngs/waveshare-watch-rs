@@ -8,13 +8,13 @@ const QMI8658_ADDR: u8 = 0x6B;
 
 // Registers
 const REG_WHO_AM_I: u8 = 0x00;
-const REG_CTRL1: u8 = 0x02;  // Serial interface and sensor enable
-const REG_CTRL2: u8 = 0x03;  // Accelerometer settings
-const REG_CTRL3: u8 = 0x04;  // Gyroscope settings
-const REG_CTRL5: u8 = 0x06;  // Low-pass filter
-const REG_CTRL7: u8 = 0x08;  // Enable sensors
-const REG_AX_L: u8 = 0x35;   // Accel X low byte
-const REG_GX_L: u8 = 0x3B;   // Gyro X low byte
+const REG_CTRL1: u8 = 0x02; // Serial interface and sensor enable
+const REG_CTRL2: u8 = 0x03; // Accelerometer settings
+const REG_CTRL3: u8 = 0x04; // Gyroscope settings
+const REG_CTRL5: u8 = 0x06; // Low-pass filter
+const REG_CTRL7: u8 = 0x08; // Enable sensors
+const REG_AX_L: u8 = 0x35; // Accel X low byte
+const REG_GX_L: u8 = 0x3B; // Gyro X low byte
 const REG_TEMP_L: u8 = 0x33; // Temperature low byte
 
 const QMI8658_WHO_AM_I: u8 = 0x05; // Expected chip ID
@@ -43,8 +43,8 @@ impl<I: I2c> Qmi8658Imu<I> {
     pub fn new(i2c: I) -> Self {
         Self {
             i2c,
-            accel_scale: 1.0 / 4096.0,  // ±8g default
-            gyro_scale: 1.0 / 64.0,      // ±512 dps default
+            accel_scale: 1.0 / 4096.0, // ±8g default
+            gyro_scale: 1.0 / 64.0,    // ±512 dps default
         }
     }
 

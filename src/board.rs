@@ -44,11 +44,11 @@ pub const LCD_TE: u8 = 13;
 
 // === Audio I2S ===
 pub const I2S_MCLK: u8 = 16;
-pub const I2S_SCLK: u8 = 41;  // BCLK
-pub const I2S_LRCK: u8 = 45;  // WS
+pub const I2S_SCLK: u8 = 41; // BCLK
+pub const I2S_LRCK: u8 = 45; // WS
 pub const I2S_DSDIN: u8 = 40; // DAC data in (speaker)
 pub const I2S_ASDOUT: u8 = 42; // ADC data out (microphone)
-pub const PA_CTRL: u8 = 46;   // Power amplifier enable
+pub const PA_CTRL: u8 = 46; // Power amplifier enable
 
 // === IMU Interrupt ===
 pub const IMU_INT: u8 = 21;

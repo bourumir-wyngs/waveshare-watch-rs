@@ -158,8 +158,10 @@ pub fn closest_wake(now: DateTime, records: &[TimeRecord]) -> Result<Option<Clos
                 continue;
             }
 
-            let forward = forward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
-            let backward = backward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
+            let forward =
+                forward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
+            let backward =
+                backward_delta_seconds(current_weekday, weekday, now_seconds, target_seconds);
             let (difference, is_future) = if forward <= backward {
                 (forward, true)
             } else {
@@ -262,7 +264,12 @@ fn seconds_since_midnight(hour: u8, minute: u8, second: u8) -> u64 {
     hour as u64 * 60 * 60 + minute as u64 * 60 + second as u64
 }
 
-fn forward_delta_seconds(current_weekday: u8, target_weekday: u8, now_seconds: u64, target_seconds: u64) -> u64 {
+fn forward_delta_seconds(
+    current_weekday: u8,
+    target_weekday: u8,
+    now_seconds: u64,
+    target_seconds: u64,
+) -> u64 {
     let mut days_until = days_until_weekday(current_weekday, target_weekday);
     if days_until == 0 && target_seconds < now_seconds {
         days_until = 7;
@@ -277,7 +284,12 @@ fn forward_delta_seconds(current_weekday: u8, target_weekday: u8, now_seconds: u
     delta
 }
 
-fn backward_delta_seconds(current_weekday: u8, target_weekday: u8, now_seconds: u64, target_seconds: u64) -> u64 {
+fn backward_delta_seconds(
+    current_weekday: u8,
+    target_weekday: u8,
+    now_seconds: u64,
+    target_seconds: u64,
+) -> u64 {
     let mut days_since = days_since_weekday(current_weekday, target_weekday);
     if days_since == 0 && target_seconds > now_seconds {
         days_since = 7;

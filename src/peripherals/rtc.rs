@@ -108,12 +108,13 @@ impl<I: I2c> Pcf85063aRtc<I> {
     pub fn get_time(&mut self) -> Result<DateTime, I::Error> {
         // Read all time registers in one burst (7 bytes from 0x04)
         let mut buf = [0u8; 7];
-        self.i2c.write_read(PCF85063A_ADDR, &[REG_SECONDS], &mut buf)?;
+        self.i2c
+            .write_read(PCF85063A_ADDR, &[REG_SECONDS], &mut buf)?;
 
         Ok(DateTime {
             seconds: bcd_to_dec(buf[0] & 0x7F), // mask OS bit
             minutes: bcd_to_dec(buf[1] & 0x7F),
-            hours: bcd_to_dec(buf[2] & 0x3F),   // 24h mode
+            hours: bcd_to_dec(buf[2] & 0x3F), // 24h mode
             day: bcd_to_dec(buf[3] & 0x3F),
             weekday: buf[4] & 0x07,
             month: bcd_to_dec(buf[5] & 0x1F),

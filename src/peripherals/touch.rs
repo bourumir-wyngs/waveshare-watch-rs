@@ -112,11 +112,7 @@ impl<I: I2c> Ft3168Touch<I> {
         let x = ((x_h & 0x0F) << 8) | x_l;
         let y = ((y_h & 0x0F) << 8) | y_l;
 
-        Ok(Some(TouchPoint {
-            x,
-            y,
-            fingers,
-        }))
+        Ok(Some(TouchPoint { x, y, fingers }))
     }
 
     /// Poll touch and detect swipe gestures.
@@ -152,10 +148,18 @@ impl<I: I2c> Ft3168Touch<I> {
                         SwipeDirection::Tap
                     } else if abs_dx > abs_dy * 3 / 2 {
                         // Clearly horizontal
-                        if dx > 0 { SwipeDirection::Right } else { SwipeDirection::Left }
+                        if dx > 0 {
+                            SwipeDirection::Right
+                        } else {
+                            SwipeDirection::Left
+                        }
                     } else if abs_dy > abs_dx * 3 / 2 {
                         // Clearly vertical
-                        if dy > 0 { SwipeDirection::Down } else { SwipeDirection::Up }
+                        if dy > 0 {
+                            SwipeDirection::Down
+                        } else {
+                            SwipeDirection::Up
+                        }
                     } else {
                         // Diagonal - treat as tap (ignore)
                         SwipeDirection::Tap
