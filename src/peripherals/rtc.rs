@@ -17,6 +17,10 @@ const REG_DAYS: u8 = 0x07;
 const REG_WEEKDAYS: u8 = 0x08;
 const REG_MONTHS: u8 = 0x09;
 const REG_YEARS: u8 = 0x0A;
+const REG_MINUTE_ALARM: u8 = 0x0B;
+const REG_HOUR_ALARM: u8 = 0x0C;
+const REG_DAY_ALARM: u8 = 0x0D;
+const REG_WEEKDAY_ALARM: u8 = 0x0E;
 const REG_TIMER_VAL: u8 = 0x10;
 const REG_TIMER_MODE: u8 = 0x11;
 
@@ -92,6 +96,54 @@ impl<I: I2c> Pcf85063aRtc<I> {
         self.write_ram_byte(value & !mask)
     }
 
+    /// Read the RTC alarm/alert hour and minute registers.
+    ///
+    /// Returns `None` if either the minute or hour alarm register is disabled.
+    pub fn get_alert_time(&mut self) -> Result<Option<(u8, u8)>, I::Error> {
+        let minute_reg = self.read_reg(REG_MINUTE_ALARM)?;
+        let hour_reg = self.read_reg(REG_HOUR_ALARM)?;
+
+        if (minute_reg & 0x80) != 0 || (hour_reg & 0x80) != 0 {
+            return Ok(None);
+        }
+
+        let minutes = bcd_to_dec(minute_reg & 0x7F);
+        let hours = bcd_to_dec(hour_reg & 0x3F);
+        if hours < 24 && minutes < 60 {
+            Ok(Some((hours, minutes)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Store an HH:MM value in the RTC alarm/alert registers.
+    ///
+    /// Only hour and minute matching are enabled; day and weekday alarm matching
+    /// are disabled so the register represents a daily time-of-day alert.
+    pub fn set_alert_time(&mut self, hours: u8, minutes: u8) -> Result<(), I::Error> {
+        let hours = hours.min(23);
+        let minutes = minutes.min(59);
+
+        self.write_reg(REG_MINUTE_ALARM, dec_to_bcd(minutes) & 0x7F)?;
+        self.write_reg(REG_HOUR_ALARM, dec_to_bcd(hours) & 0x3F)?;
+        self.write_reg(REG_DAY_ALARM, 0x80)?;
+        self.write_reg(REG_WEEKDAY_ALARM, 0x80)
+    }
+
+    /// Disable the RTC alarm/alert time.
+    ///
+    /// This marks all alarm fields as disabled (bit 7 set) and clears any
+    /// pending alarm flag. The stored register values are intentionally not
+    /// treated as an active alert while disabled.
+    pub fn disable_alert_time(&mut self) -> Result<(), I::Error> {
+        self.write_reg(REG_MINUTE_ALARM, 0x80)?;
+        self.write_reg(REG_HOUR_ALARM, 0x80)?;
+        self.write_reg(REG_DAY_ALARM, 0x80)?;
+        self.write_reg(REG_WEEKDAY_ALARM, 0x80)?;
+
+        let ctrl2 = self.read_reg(REG_CTRL2)?;
+        self.write_reg(REG_CTRL2, ctrl2 & !(1 << 6))
+    }
     /// Initialize RTC: ensure oscillator running, 24h mode.
     pub fn init(&mut self) -> Result<(), I::Error> {
         let ctrl1 = self.read_reg(REG_CTRL1)?;

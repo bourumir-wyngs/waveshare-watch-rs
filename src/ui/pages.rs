@@ -139,7 +139,12 @@ pub fn draw_quick_view<D: DrawTarget<Color = Rgb565>>(
         let y = cell_h * (row_idx as i32 + 1) + cell_h / 2;
         for (col_idx, label) in row.iter().enumerate() {
             let x = cell_w * col_idx as i32 + cell_w / 2;
-            draw_large_key_label(display, label, Point::new(x, y), rust)?;
+            let color = if *label == "S" || *label == "C" {
+                Rgb565::WHITE
+            } else {
+                rust
+            };
+            draw_large_key_label(display, label, Point::new(x, y), color)?;
         }
     }
 

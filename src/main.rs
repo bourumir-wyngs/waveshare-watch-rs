@@ -235,11 +235,54 @@ fn rtc_to_time_manager_datetime(dt: crate::peripherals::rtc::DateTime) -> time_m
     )
 }
 
-fn aod_next_wake_time(dt: crate::peripherals::rtc::DateTime) -> Option<(u8, u8)> {
+const RTC_ALERT_RGB: time_manager::Rgb = time_manager::Rgb::new(255, 72, 0);
+
+fn schedule_records_with_rtc_alert(
+    rtc_alert_time: Option<(u8, u8)>,
+) -> ([time_manager::TimeRecord; 6], usize) {
+    let empty = time_manager::TimeRecord::new(0, 0, [time_manager::WEEKDAY_NONE; 7]);
+    let mut records = [empty; 6];
+
+    for (idx, record) in time_manager::schedule::WAKE_SCHEDULE.iter().enumerate() {
+        records[idx] = *record;
+    }
+
+    let mut len = time_manager::schedule::WAKE_SCHEDULE.len();
+    if let Some((hours, minutes)) = rtc_alert_time {
+        records[len] = time_manager::TimeRecord::new_with_color(
+            hours.min(23),
+            minutes.min(59),
+            time_manager::schedule::EVERY_DAY,
+            RTC_ALERT_RGB,
+        );
+        len += 1;
+    }
+
+    (records, len)
+}
+
+fn next_wake_with_rtc_alert(
+    now: time_manager::DateTime,
+    rtc_alert_time: Option<(u8, u8)>,
+    minimum_duration: Option<core::time::Duration>,
+) -> Result<Option<time_manager::NextWake>, time_manager::Error> {
+    let (records, len) = schedule_records_with_rtc_alert(rtc_alert_time);
+    let records = &records[..len];
+    if let Some(minimum_duration) = minimum_duration {
+        time_manager::next_wake_after(now, records, minimum_duration)
+    } else {
+        time_manager::next_wake(now, records)
+    }
+}
+
+fn aod_next_wake_time(
+    dt: crate::peripherals::rtc::DateTime,
+    rtc_alert_time: Option<(u8, u8)>,
+) -> Option<(u8, u8)> {
     const MAX_AOD_WAKE_SECS: u64 = 24 * 60 * 60;
 
     let now = rtc_to_time_manager_datetime(dt);
-    match time_manager::next_wake(now, &time_manager::schedule::WAKE_SCHEDULE) {
+    match next_wake_with_rtc_alert(now, rtc_alert_time, None) {
         Ok(Some(wake)) if wake.duration.as_secs() <= MAX_AOD_WAKE_SECS => {
             Some((wake.hour, wake.minute))
         }
@@ -247,13 +290,33 @@ fn aod_next_wake_time(dt: crate::peripherals::rtc::DateTime) -> Option<(u8, u8)>
     }
 }
 
-fn aod_scheduled_time_alert_color(dt: crate::peripherals::rtc::DateTime) -> Option<Rgb565> {
+fn aod_scheduled_time_alert_color(
+    dt: crate::peripherals::rtc::DateTime,
+    rtc_alert_time: Option<(u8, u8)>,
+) -> Option<Rgb565> {
     let now = rtc_to_time_manager_datetime(dt);
-    match time_manager::closest_wake(now, &time_manager::schedule::WAKE_SCHEDULE) {
+    let (records, len) = schedule_records_with_rtc_alert(rtc_alert_time);
+    match time_manager::closest_wake(now, &records[..len]) {
         Ok(Some(wake)) if wake.difference.as_secs() < AOD_ALERT_WINDOW_SECS => {
             Some(schedule_rgb_to_rgb565(wake.color))
         }
         _ => None,
+    }
+}
+
+fn rtc_alert_due(dt: crate::peripherals::rtc::DateTime, rtc_alert_time: Option<(u8, u8)>) -> bool {
+    let Some((hours, minutes)) = rtc_alert_time else {
+        return false;
+    };
+    let record = time_manager::TimeRecord::new_with_color(
+        hours.min(23),
+        minutes.min(59),
+        time_manager::schedule::EVERY_DAY,
+        RTC_ALERT_RGB,
+    );
+    match time_manager::closest_wake(rtc_to_time_manager_datetime(dt), &[record]) {
+        Ok(Some(wake)) => wake.difference.as_secs() < AOD_ALERT_WINDOW_SECS,
+        _ => false,
     }
 }
 
@@ -520,6 +583,8 @@ async fn main(_spawner: Spawner) {
     let mut current_page = Page::Aod;
     let mut quick_view_time_digits: [Option<u8>; 4] = [None; 4];
     let mut quick_view_time_len: usize = 0;
+    let mut quick_view_loaded = false;
+    let mut rtc_alert_time = rtc.get_alert_time().unwrap_or(None);
     // Live power-diagnostic snapshot, updated in the main loop and read
     // by the Power page renderer. Kept as plain POD so reading it is free.
     let mut power_stats = PowerStats::new();
@@ -577,10 +642,15 @@ async fn main(_spawner: Spawner) {
     if let Ok(dt) = rtc.get_time() {
         watchface.update_time(dt.hours, dt.minutes, dt.seconds);
         watchface.update_date(dt.day, dt.month, dt.year, dt.weekday);
-        watchface.update_next_wake_time(aod_next_wake_time(dt));
-        let alert_color = aod_scheduled_time_alert_color(dt);
+        watchface.update_next_wake_time(aod_next_wake_time(dt, rtc_alert_time));
+        let alert_color = aod_scheduled_time_alert_color(dt, rtc_alert_time);
         boot_aod_time_alert = alert_color.is_some();
         watchface.update_aod_time_alert_color(alert_color);
+        if rtc_alert_due(dt, rtc_alert_time) {
+            let _ = rtc.disable_alert_time();
+            rtc_alert_time = None;
+            quick_view_loaded = false;
+        }
         aod_last_minute = dt.minutes;
     }
     display.set_brightness(AOD_BRIGHTNESS);
@@ -1181,6 +1251,27 @@ async fn main(_spawner: Spawner) {
                 aod_last_minute = 99;
             } else {
                 current_page = Page::QuickView;
+                if !quick_view_loaded {
+                    match rtc.get_alert_time() {
+                        Ok(alert_time) => {
+                            rtc_alert_time = alert_time;
+                            if let Some((hours, minutes)) = alert_time {
+                                quick_view_time_digits = [
+                                    Some(hours / 10),
+                                    Some(hours % 10),
+                                    Some(minutes / 10),
+                                    Some(minutes % 10),
+                                ];
+                                quick_view_time_len = quick_view_time_digits.len();
+                            } else {
+                                quick_view_time_digits = [None; 4];
+                                quick_view_time_len = 0;
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                    quick_view_loaded = true;
+                }
                 if screen_state == 0 {
                     display.display_on();
                     Timer::after(Duration::from_millis(20)).await;
@@ -1210,16 +1301,13 @@ async fn main(_spawner: Spawner) {
             let scheduled_wake = match rtc.get_time() {
                 Ok(dt) => {
                     let now = rtc_to_time_manager_datetime(dt);
-                    let next_wake = if skip_current_alert_window {
+                    let minimum_duration = if skip_current_alert_window {
                         println!("[POWER] next wake: skipping current scheduler alert window");
-                        time_manager::next_wake_after(
-                            now,
-                            &time_manager::schedule::WAKE_SCHEDULE,
-                            core::time::Duration::from_secs(AOD_ALERT_WINDOW_SECS),
-                        )
+                        Some(core::time::Duration::from_secs(AOD_ALERT_WINDOW_SECS))
                     } else {
-                        time_manager::next_wake(now, &time_manager::schedule::WAKE_SCHEDULE)
+                        None
                     };
+                    let next_wake = next_wake_with_rtc_alert(now, rtc_alert_time, minimum_duration);
 
                     match next_wake {
                         Ok(Some(wake)) => {
@@ -1656,8 +1744,16 @@ async fn main(_spawner: Spawner) {
                 if dt.minutes != aod_last_minute {
                     aod_last_minute = dt.minutes;
                     watchface.update_time(dt.hours, dt.minutes, dt.seconds);
-                    watchface.update_next_wake_time(aod_next_wake_time(dt));
-                    watchface.update_aod_time_alert_color(aod_scheduled_time_alert_color(dt));
+                    watchface.update_next_wake_time(aod_next_wake_time(dt, rtc_alert_time));
+                    watchface.update_aod_time_alert_color(aod_scheduled_time_alert_color(
+                        dt,
+                        rtc_alert_time,
+                    ));
+                    if rtc_alert_due(dt, rtc_alert_time) {
+                        let _ = rtc.disable_alert_time();
+                        rtc_alert_time = None;
+                        quick_view_loaded = false;
+                    }
                     if let Ok(pct) = power.get_battery_percent() {
                         watchface.update_battery(pct, batt_mv, charging);
                     }
@@ -1723,10 +1819,16 @@ async fn main(_spawner: Spawner) {
                             if dt.minutes != aod_last_minute {
                                 aod_last_minute = dt.minutes;
                                 watchface.update_time(dt.hours, dt.minutes, dt.seconds);
-                                watchface.update_next_wake_time(aod_next_wake_time(dt));
+                                watchface
+                                    .update_next_wake_time(aod_next_wake_time(dt, rtc_alert_time));
                                 watchface.update_aod_time_alert_color(
-                                    aod_scheduled_time_alert_color(dt),
+                                    aod_scheduled_time_alert_color(dt, rtc_alert_time),
                                 );
+                                if rtc_alert_due(dt, rtc_alert_time) {
+                                    let _ = rtc.disable_alert_time();
+                                    rtc_alert_time = None;
+                                    quick_view_loaded = false;
+                                }
                                 if let Ok(pct) = power.get_battery_percent() {
                                     watchface.update_battery(pct, batt_mv, charging);
                                 }
@@ -1872,7 +1974,26 @@ async fn main(_spawner: Spawner) {
                                 page_dirty = true;
                             }
                             pages::QuickViewKey::Set => {
-                                // Placeholder for the next step.
+                                let had_input = quick_view_time_len > 0;
+                                for digit in quick_view_time_digits.iter_mut() {
+                                    if digit.is_none() {
+                                        *digit = Some(0);
+                                    }
+                                }
+                                let hours = quick_view_time_digits[0].unwrap_or(0) * 10
+                                    + quick_view_time_digits[1].unwrap_or(0);
+                                let minutes = quick_view_time_digits[2].unwrap_or(0) * 10
+                                    + quick_view_time_digits[3].unwrap_or(0);
+                                if had_input {
+                                    let _ = rtc.set_alert_time(hours, minutes);
+                                    rtc_alert_time = Some((hours, minutes));
+                                } else {
+                                    let _ = rtc.disable_alert_time();
+                                    rtc_alert_time = None;
+                                    quick_view_time_digits = [None; 4];
+                                }
+                                quick_view_time_len = quick_view_time_digits.len();
+                                page_dirty = true;
                             }
                         }
                     }
