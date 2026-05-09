@@ -583,6 +583,7 @@ async fn main(_spawner: Spawner) {
     let mut current_page = Page::Aod;
     let mut quick_view_time_digits: [Option<u8>; 4] = [None; 4];
     let mut quick_view_time_len: usize = 0;
+    let mut quick_view_show_set_key = true;
     let mut quick_view_loaded = false;
     let mut rtc_alert_time = rtc.get_alert_time().unwrap_or(None);
     // Live power-diagnostic snapshot, updated in the main loop and read
@@ -1251,6 +1252,7 @@ async fn main(_spawner: Spawner) {
                 aod_last_minute = 99;
             } else {
                 current_page = Page::QuickView;
+                quick_view_show_set_key = true;
                 if !quick_view_loaded {
                     match rtc.get_alert_time() {
                         Ok(alert_time) => {
@@ -1806,7 +1808,11 @@ async fn main(_spawner: Spawner) {
                             let _ = power_page::draw_power_page(&mut fb, &power_stats);
                         }
                         Page::QuickView => {
-                            let _ = pages::draw_quick_view(&mut fb, &quick_view_time_digits);
+                            let _ = pages::draw_quick_view(
+                                &mut fb,
+                                &quick_view_time_digits,
+                                quick_view_show_set_key,
+                            );
                         }
                         _ => {}
                     }
@@ -1971,9 +1977,10 @@ async fn main(_spawner: Spawner) {
                             pages::QuickViewKey::Clear => {
                                 quick_view_time_digits = [None; 4];
                                 quick_view_time_len = 0;
+                                quick_view_show_set_key = true;
                                 page_dirty = true;
                             }
-                            pages::QuickViewKey::Set => {
+                            pages::QuickViewKey::Set if quick_view_show_set_key => {
                                 let had_input = quick_view_time_len > 0;
                                 for digit in quick_view_time_digits.iter_mut() {
                                     if digit.is_none() {
@@ -1993,8 +2000,10 @@ async fn main(_spawner: Spawner) {
                                     quick_view_time_digits = [None; 4];
                                 }
                                 quick_view_time_len = quick_view_time_digits.len();
+                                quick_view_show_set_key = false;
                                 page_dirty = true;
                             }
+                            pages::QuickViewKey::Set => {}
                         }
                     }
                 }

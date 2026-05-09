@@ -102,6 +102,7 @@ pub fn quick_view_key_at(x: u16, y: u16) -> Option<QuickViewKey> {
 pub fn draw_quick_view<D: DrawTarget<Color = Rgb565>>(
     display: &mut D,
     time_digits: &[Option<u8>; 4],
+    show_set_key: bool,
 ) -> Result<(), D::Error> {
     let cx = W as i32 / 2;
     let rust = Rgb565::new(31, 18, 0);
@@ -133,7 +134,7 @@ pub fn draw_quick_view<D: DrawTarget<Color = Rgb565>>(
         ["7", "8", "9"],
         ["4", "5", "6"],
         ["1", "2", "3"],
-        ["0", "S", "C"],
+        ["0", if show_set_key { "S" } else { "" }, "C"],
     ];
     for (row_idx, row) in labels.iter().enumerate() {
         let y = cell_h * (row_idx as i32 + 1) + cell_h / 2;
