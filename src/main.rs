@@ -518,6 +518,8 @@ async fn main(_spawner: Spawner) {
     let mut watchface = WatchFace::new();
     watchface.wifi_connected = false; // radio stays off until user taps the button
     let mut current_page = Page::Aod;
+    let mut quick_view_time_digits: [Option<u8>; 4] = [None; 4];
+    let mut quick_view_time_len: usize = 0;
     // Live power-diagnostic snapshot, updated in the main loop and read
     // by the Power page renderer. Kept as plain POD so reading it is free.
     let mut power_stats = PowerStats::new();
@@ -525,7 +527,7 @@ async fn main(_spawner: Spawner) {
     #[cfg(feature = "app-launcher")]
     let mut app_state = AppState::Watchface;
     #[cfg(not(feature = "app-launcher"))]
-    let app_state = AppState::Watchface;
+    let mut app_state = AppState::Watchface;
     #[cfg(feature = "snake")]
     let mut snake_game = SnakeGame::new();
     #[cfg(feature = "game-2048")]
@@ -1011,6 +1013,12 @@ async fn main(_spawner: Spawner) {
     // If this boot was caused by the BOOT button, the pin may still be held low.
     // Do not treat it as a new sleep request until it has been released once.
     let mut boot_button_armed = !boot_button.is_low();
+    let mut pwr_pin = peripherals.GPIO10;
+    let mut pwr_button = Input::new(
+        pwr_pin.reborrow(),
+        InputConfig::default().with_pull(Pull::Up),
+    );
+    let mut pwr_button_armed = !pwr_button.is_low();
     println!("=== All systems GO! (Embassy async, WiFi OFF) ===");
 
     // Give the user a full interactive AOD window after the slower init
@@ -1038,7 +1046,7 @@ async fn main(_spawner: Spawner) {
     // When the user touches the screen or presses BOOT, the select returns immediately
     // and we process the input. With this design, the CPU is parked >99% of the time
     // while sitting on the watchface.
-    use embassy_futures::select::select3;
+    use embassy_futures::select::select4;
 
     let mut next_rtc = Instant::now();
     let mut next_battery = Instant::now();
@@ -1073,8 +1081,9 @@ async fn main(_spawner: Spawner) {
         // sleep without any external wake source.
         let touch_held = touch_int.is_low();
         let button_held = boot_button.is_low();
+        let pwr_held = pwr_button.is_low();
 
-        let tick = if touch_held || button_held {
+        let tick = if touch_held || button_held || pwr_held {
             // Something is currently being held: wake fast enough to track motion / detect
             // long-press, but no faster than necessary.
             Duration::from_millis(16) // ~60 Hz
@@ -1102,6 +1111,7 @@ async fn main(_spawner: Spawner) {
                     // Power page refreshes at 1 Hz — fast enough to see
                     // changes, slow enough not to skew the measurement.
                     Page::Power => Duration::from_secs(1),
+                    Page::QuickView => Duration::from_secs(2),
                 },
                 #[cfg(feature = "app-launcher")]
                 AppState::Launcher => Duration::from_millis(100),
@@ -1133,10 +1143,11 @@ async fn main(_spawner: Spawner) {
         //     but the tick above is short (16 ms) so we still wake reactively.
         //   * The futures from esp-hal install GPIO interrupts on creation and remove them on
         //     drop, so the executor parks the CPU between events: this is the main power win.
-        let _ = select3(
+        let _ = select4(
             Timer::after(tick),
             touch_int.wait_for_falling_edge(),
             boot_button.wait_for_falling_edge(),
+            pwr_button.wait_for_falling_edge(),
         )
         .await;
 
@@ -1156,6 +1167,32 @@ async fn main(_spawner: Spawner) {
             }
         } else {
             boot_button_armed = true;
+        }
+        let pwr_pressed = pwr_button.is_low();
+        if pwr_pressed && pwr_button_armed {
+            pwr_button_armed = false;
+            last_interaction = now;
+            app_state = AppState::Watchface;
+            if current_page == Page::QuickView {
+                current_page = Page::Aod;
+                display.set_brightness(AOD_BRIGHTNESS);
+                screen_state = 1;
+                aod_entered_at = now;
+                aod_last_minute = 99;
+            } else {
+                current_page = Page::QuickView;
+                if screen_state == 0 {
+                    display.display_on();
+                    Timer::after(Duration::from_millis(20)).await;
+                }
+                display.set_brightness(watchface.brightness);
+                screen_state = 3;
+            }
+            watchface.force_redraw();
+            page_dirty = true;
+            next_watchface_flush = now;
+        } else if !pwr_pressed {
+            pwr_button_armed = true;
         }
 
         if low_power_reason.is_none()
@@ -1672,6 +1709,9 @@ async fn main(_spawner: Spawner) {
                             );
                             let _ = power_page::draw_power_page(&mut fb, &power_stats);
                         }
+                        Page::QuickView => {
+                            let _ = pages::draw_quick_view(&mut fb, &quick_view_time_digits);
+                        }
                         _ => {}
                     }
                     page_dirty = false;
@@ -1741,7 +1781,7 @@ async fn main(_spawner: Spawner) {
                             next_watchface_flush = now + Duration::from_secs(1);
                         }
                     }
-                    Page::System => {} // Static, already rendered
+                    Page::System | Page::QuickView => {} // Static, already rendered
                 }
                 // Only flush if we actually drew something. The TE wait + 402 KB DMA
                 // is by far the heaviest periodic operation in the firmware, so we
@@ -1814,6 +1854,29 @@ async fn main(_spawner: Spawner) {
                     }
                 }
 
+                // QuickView numpad input. Digits fill HHMM from left to right;
+                // the colon is rendered by the view and is not entered.
+                if current_page == Page::QuickView && tap_event {
+                    if let Some(key) = pages::quick_view_key_at(last_touch_x, last_touch_y) {
+                        match key {
+                            pages::QuickViewKey::Digit(digit) => {
+                                if quick_view_time_len < quick_view_time_digits.len() {
+                                    quick_view_time_digits[quick_view_time_len] = Some(digit);
+                                    quick_view_time_len += 1;
+                                    page_dirty = true;
+                                }
+                            }
+                            pages::QuickViewKey::Clear => {
+                                quick_view_time_digits = [None; 4];
+                                quick_view_time_len = 0;
+                                page_dirty = true;
+                            }
+                            pages::QuickViewKey::Set => {
+                                // Placeholder for the next step.
+                            }
+                        }
+                    }
+                }
                 // Reboot button on Power page
                 if current_page == Page::Power && tap_event {
                     if power_page::is_reboot_zone(last_touch_x, last_touch_y) {
