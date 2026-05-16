@@ -19,33 +19,32 @@ pub enum Page {
     Sensors = 2,
     System = 3,
     Power = 4,
-    QuickView = 5,
+    AlarmSettings = 5,
+    QuickView = 6,
 }
 
 impl Page {
-    pub fn count() -> usize {
-        6
-    }
-
     pub fn next(self) -> Self {
         match self {
             Page::Aod => Page::Clock,
             Page::Clock => Page::Sensors,
             Page::Sensors => Page::System,
             Page::System => Page::Power,
-            Page::Power => Page::Aod,
-            Page::QuickView => Page::Clock,
+            Page::Power => Page::AlarmSettings,
+            Page::AlarmSettings => Page::QuickView,
+            Page::QuickView => Page::Aod,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Page::Aod => Page::Power,
+            Page::Aod => Page::QuickView,
             Page::Clock => Page::Aod,
             Page::Sensors => Page::Clock,
             Page::System => Page::Sensors,
             Page::Power => Page::System,
-            Page::QuickView => Page::Power,
+            Page::AlarmSettings => Page::Power,
+            Page::QuickView => Page::AlarmSettings,
         }
     }
 
@@ -61,9 +60,18 @@ impl Page {
             Page::Sensors => "SENSORS",
             Page::System => "SYSTEM",
             Page::Power => "POWER",
+            Page::AlarmSettings => "ALARM",
             Page::QuickView => "QUICK",
         }
     }
+}
+
+/// Reserved alarm settings page.
+pub fn draw_alarm_settings_page<D: DrawTarget<Color = Rgb565>>(
+    _display: &mut D,
+    _loud_enabled: bool,
+) -> Result<(), D::Error> {
+    Ok(())
 }
 
 /// Quick-view keypad key.
@@ -98,11 +106,16 @@ pub fn quick_view_key_at(x: u16, y: u16) -> Option<QuickViewKey> {
     }
 }
 
+pub fn quick_view_loud_toggle_at(x: u16, y: u16) -> bool {
+    y < H / 5 && x >= W.saturating_sub(90)
+}
+
 /// Draw the second-button quick view.
 pub fn draw_quick_view<D: DrawTarget<Color = Rgb565>>(
     display: &mut D,
     time_digits: &[Option<u8>; 4],
     show_set_key: bool,
+    loud_enabled: bool,
 ) -> Result<(), D::Error> {
     let cx = W as i32 / 2;
     let rust = Rgb565::new(31, 18, 0);
@@ -129,6 +142,15 @@ pub fn draw_quick_view<D: DrawTarget<Color = Rgb565>>(
         Point::new(cx, cell_h / 2),
         Rgb565::WHITE,
     )?;
+
+    if loud_enabled {
+        draw_large_key_label(
+            display,
+            "L",
+            Point::new(W as i32 - 45, cell_h / 2),
+            Rgb565::YELLOW,
+        )?;
+    }
 
     let labels = [
         ["7", "8", "9"],
@@ -220,6 +242,7 @@ fn draw_large_key_label<D: DrawTarget<Color = Rgb565>>(
         "8" => [true, true, true, true, true, true, true],
         "9" => [true, true, true, true, false, true, true],
         "C" => [true, true, false, false, true, false, true],
+        "L" => [false, true, false, false, true, false, true],
         _ => [false; 7],
     };
 

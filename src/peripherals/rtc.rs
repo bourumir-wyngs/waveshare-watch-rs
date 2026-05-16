@@ -68,6 +68,21 @@ impl<I: I2c> Pcf85063aRtc<I> {
         self.i2c.write(PCF85063A_ADDR, &[reg, val])
     }
 
+    const RAM_FLAG_LOUD: u8 = 1 << 0;
+    /// Read the alarm settings loudness flag from RTC RAM byte bit 0.
+    pub fn loud_flag(&mut self) -> Result<bool, I::Error> {
+        Ok((self.read_ram_byte()? & Self::RAM_FLAG_LOUD) != 0)
+    }
+
+    /// Store the alarm settings loudness flag in RTC RAM byte bit 0.
+    pub fn set_loud_flag(&mut self, enabled: bool) -> Result<(), I::Error> {
+        if enabled {
+            self.set_ram_flags(Self::RAM_FLAG_LOUD)
+        } else {
+            self.clear_ram_flags(Self::RAM_FLAG_LOUD)
+        }
+    }
+
     /// Read the RTC's battery-backed user RAM byte (register 0x03).
     ///
     /// This is a single byte of storage inside the PCF85063A. It is retained

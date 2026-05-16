@@ -101,6 +101,31 @@ const AUDIO_ALERT_MIDDLE_SILENCE_REPEATS: u8 = 6;
 const AUDIO_ALERT_LAST_CLIPS: u8 = 1;
 #[cfg(feature = "audio")]
 const AUDIO_ALERT_TAIL_SILENCE_REPEATS: u8 = 1;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_START_FREQ_HZ: u32 = 2_600;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_END_FREQ_HZ: u32 = 3_200;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_PATTERN_MS: u32 = 250;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_TONE_MS: u32 = 160;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_ATTACK_MS: u32 = 10;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_RELEASE_MS: u32 = 15;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_SIGNAL_MS: u32 = 2_000;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_PATTERN_FRAMES: usize =
+    (AUDIO_SAMPLE_RATE_HZ as usize * AUDIO_LOUD_PATTERN_MS as usize) / 1_000;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_DMA_BUFFER_BYTES: usize = AUDIO_LOUD_PATTERN_FRAMES * 4;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_SIGNAL_I2S_REPEATS: u8 = (AUDIO_LOUD_SIGNAL_MS / AUDIO_LOUD_PATTERN_MS) as u8;
+#[cfg(feature = "audio")]
+const AUDIO_Q15_SCALE: i32 = 32_767;
+#[cfg(feature = "audio")]
+const AUDIO_LOUD_PEAK_Q15: i32 = 29_000;
 
 // Network runner task (must be spawned for WiFi to work)
 #[embassy_executor::task]
@@ -320,6 +345,40 @@ fn rtc_alert_due(dt: crate::peripherals::rtc::DateTime, rtc_alert_time: Option<(
     }
 }
 
+fn clear_quick_view_alert_entry(
+    quick_view_time_digits: &mut [Option<u8>; 4],
+    quick_view_time_len: &mut usize,
+    quick_view_show_set_key: &mut bool,
+) {
+    *quick_view_time_digits = [None; 4];
+    *quick_view_time_len = 0;
+    *quick_view_show_set_key = true;
+}
+
+fn sync_quick_view_alert_entry(
+    rtc_alert_time: Option<(u8, u8)>,
+    quick_view_time_digits: &mut [Option<u8>; 4],
+    quick_view_time_len: &mut usize,
+    quick_view_show_set_key: &mut bool,
+) {
+    if let Some((hours, minutes)) = rtc_alert_time {
+        *quick_view_time_digits = [
+            Some(hours / 10),
+            Some(hours % 10),
+            Some(minutes / 10),
+            Some(minutes % 10),
+        ];
+        *quick_view_time_len = quick_view_time_digits.len();
+        *quick_view_show_set_key = false;
+    } else {
+        clear_quick_view_alert_entry(
+            quick_view_time_digits,
+            quick_view_time_len,
+            quick_view_show_set_key,
+        );
+    }
+}
+
 fn schedule_rgb_to_rgb565(color: time_manager::Rgb) -> Rgb565 {
     Rgb565::new(color.red >> 3, color.green >> 2, color.blue >> 3)
 }
@@ -334,6 +393,65 @@ fn load_audio_clip_i2s(buf: &mut [u8; AUDIO_DMA_BUFFER_BYTES]) {
         let sample =
             ((mono as i32) * AUDIO_SAMPLE_GAIN).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         let bytes = sample.to_le_bytes();
+        buf[dst] = bytes[0];
+        buf[dst + 1] = bytes[1];
+        buf[dst + 2] = bytes[0];
+        buf[dst + 3] = bytes[1];
+    }
+}
+
+#[cfg(feature = "audio")]
+const AUDIO_SINE_TABLE_Q15: [i16; 32] = [
+    0, 6393, 12540, 18204, 23170, 27246, 30273, 32138, 32767, 32138, 30273, 27246, 23170, 18204,
+    12540, 6393, 0, -6393, -12540, -18204, -23170, -27246, -30273, -32138, -32767, -32138, -30273,
+    -27246, -23170, -18204, -12540, -6393,
+];
+
+#[cfg(feature = "audio")]
+fn sine_q15(phase: u32) -> i32 {
+    let idx = (phase >> 27) as usize;
+    let next_idx = (idx + 1) & (AUDIO_SINE_TABLE_Q15.len() - 1);
+    let frac = ((phase >> 11) & 0xffff) as i64;
+    let a = AUDIO_SINE_TABLE_Q15[idx] as i64;
+    let b = AUDIO_SINE_TABLE_Q15[next_idx] as i64;
+
+    (a + (((b - a) * frac) >> 16)) as i32
+}
+
+#[cfg(feature = "audio")]
+fn load_loud_alert_i2s(buf: &mut [u8; AUDIO_LOUD_DMA_BUFFER_BYTES]) {
+    let tone_frames = (AUDIO_SAMPLE_RATE_HZ * AUDIO_LOUD_TONE_MS / 1_000) as usize;
+    let attack_frames = (AUDIO_SAMPLE_RATE_HZ * AUDIO_LOUD_ATTACK_MS / 1_000) as usize;
+    let release_frames = (AUDIO_SAMPLE_RATE_HZ * AUDIO_LOUD_RELEASE_MS / 1_000) as usize;
+    let chirp_denominator = tone_frames.saturating_sub(1).max(1) as u64;
+    let chirp_span_hz = AUDIO_LOUD_END_FREQ_HZ - AUDIO_LOUD_START_FREQ_HZ;
+    let mut phase = 0u32;
+
+    for frame in 0..(buf.len() / 4) {
+        let sample = if frame < tone_frames {
+            let freq_hz = AUDIO_LOUD_START_FREQ_HZ
+                + ((chirp_span_hz as u64 * frame as u64) / chirp_denominator) as u32;
+            let phase_step = (((freq_hz as u64) << 32) / AUDIO_SAMPLE_RATE_HZ as u64) as u32;
+            let envelope_q15 = if attack_frames > 0 && frame < attack_frames {
+                (frame as i64 * AUDIO_Q15_SCALE as i64) / attack_frames as i64
+            } else if release_frames > 0 && frame + release_frames >= tone_frames {
+                let remaining_frames = tone_frames - frame;
+                ((remaining_frames as i64 * AUDIO_Q15_SCALE as i64) / release_frames as i64)
+                    .min(AUDIO_Q15_SCALE as i64)
+            } else {
+                AUDIO_Q15_SCALE as i64
+            };
+            let sine = sine_q15(phase) as i64;
+            phase = phase.wrapping_add(phase_step);
+
+            ((sine * AUDIO_LOUD_PEAK_Q15 as i64 * envelope_q15)
+                / (AUDIO_Q15_SCALE as i64 * AUDIO_Q15_SCALE as i64))
+                .clamp(i16::MIN as i64, i16::MAX as i64) as i16
+        } else {
+            0
+        };
+        let bytes = sample.to_le_bytes();
+        let dst = frame * 4;
         buf[dst] = bytes[0];
         buf[dst + 1] = bytes[1];
         buf[dst + 2] = bytes[0];
@@ -585,6 +703,9 @@ async fn main(_spawner: Spawner) {
     let mut quick_view_time_len: usize = 0;
     let mut quick_view_show_set_key = true;
     let mut quick_view_loaded = false;
+    let mut alarm_loud_enabled = rtc.loud_flag().unwrap_or(false);
+    #[cfg(feature = "audio")]
+    let alarm_loud_enabled_at_boot = alarm_loud_enabled;
     let mut rtc_alert_time = rtc.get_alert_time().unwrap_or(None);
     // Live power-diagnostic snapshot, updated in the main loop and read
     // by the Power page renderer. Kept as plain POD so reading it is free.
@@ -651,6 +772,11 @@ async fn main(_spawner: Spawner) {
             let _ = rtc.disable_alert_time();
             rtc_alert_time = None;
             quick_view_loaded = false;
+            clear_quick_view_alert_entry(
+                &mut quick_view_time_digits,
+                &mut quick_view_time_len,
+                &mut quick_view_show_set_key,
+            );
         }
         aod_last_minute = dt.minutes;
     }
@@ -827,6 +953,8 @@ async fn main(_spawner: Spawner) {
     #[cfg(feature = "audio")]
     let mut silence_buf: Option<&'static [u8; AUDIO_DMA_BUFFER_BYTES]> = None;
     #[cfg(feature = "audio")]
+    let mut loud_buf: Option<&'static [u8; AUDIO_LOUD_DMA_BUFFER_BYTES]> = None;
+    #[cfg(feature = "audio")]
     static I2S_TX_DESC: static_cell::StaticCell<[esp_hal::dma::DmaDescriptor; 8]> =
         static_cell::StaticCell::new();
     #[cfg(feature = "audio")]
@@ -834,6 +962,9 @@ async fn main(_spawner: Spawner) {
         static_cell::StaticCell::new();
     #[cfg(feature = "audio")]
     static SILENCE_BUF: static_cell::StaticCell<[u8; AUDIO_DMA_BUFFER_BYTES]> =
+        static_cell::StaticCell::new();
+    #[cfg(feature = "audio")]
+    static LOUD_BUF: static_cell::StaticCell<[u8; AUDIO_LOUD_DMA_BUFFER_BYTES]> =
         static_cell::StaticCell::new();
 
     #[cfg(feature = "audio")]
@@ -865,6 +996,8 @@ async fn main(_spawner: Spawner) {
                     let clip = CLIP_BUF.init_with(|| [0u8; AUDIO_DMA_BUFFER_BYTES]);
                     load_audio_clip_i2s(clip);
                     let silence = SILENCE_BUF.init_with(|| [0u8; AUDIO_DMA_BUFFER_BYTES]);
+                    let loud = LOUD_BUF.init_with(|| [0u8; AUDIO_LOUD_DMA_BUFFER_BYTES]);
+                    load_loud_alert_i2s(loud);
                     println!(
                         "[AUDIO] I2S OK (clip: {} mono-i8 samples, {} ms, {} active bytes -> {} DMA bytes)",
                         audio_clip::SAMPLES.len(),
@@ -876,11 +1009,14 @@ async fn main(_spawner: Spawner) {
                     i2s_tx = Some(tx);
                     clip_buf = Some(clip);
                     silence_buf = Some(silence);
+                    loud_buf = Some(loud);
                 } else {
                     println!("[AUDIO] Init unavailable");
                 }
             }
 
+            let _ = clip_buf.is_some();
+            let _ = loud_buf.is_some();
             audio_codec.is_some() && i2s_tx.is_some()
         }};
     }
@@ -962,6 +1098,47 @@ async fn main(_spawner: Spawner) {
     }
 
     #[cfg(feature = "audio")]
+    macro_rules! play_loud_alert_signal {
+        ($label:expr) => {{
+            if ensure_audio!() {
+                if let (Some(codec), Some(tx), Some(loud), Some(silence)) =
+                    (audio_codec.as_mut(), i2s_tx.as_mut(), loud_buf, silence_buf)
+                {
+                    println!("[AUDIO] {}", $label);
+                    let _ = codec.unmute();
+                    pa_en.set_high();
+                    delay.delay_millis(20);
+
+                    for _ in 0..AUDIO_LOUD_SIGNAL_I2S_REPEATS {
+                        match tx.write_dma(loud) {
+                            Ok(transfer) => {
+                                let _ = transfer.wait();
+                            }
+                            Err(_) => {
+                                println!("[AUDIO] DMA start failed");
+                                break;
+                            }
+                        }
+                    }
+
+                    match tx.write_dma(silence) {
+                        Ok(transfer) => {
+                            let _ = transfer.wait();
+                        }
+                        Err(_) => println!("[AUDIO] DMA start failed"),
+                    }
+
+                    delay.delay_millis(5);
+                    pa_en.set_low();
+                    let _ = codec.mute();
+                }
+            } else {
+                println!("[AUDIO] Loud alert skipped; audio unavailable");
+            }
+        }};
+    }
+
+    #[cfg(feature = "audio")]
     if STARTUP_BEEP_TEST {
         play_audio_sequence!(
             "startup test clip",
@@ -971,13 +1148,17 @@ async fn main(_spawner: Spawner) {
             AUDIO_ALERT_TAIL_SILENCE_REPEATS
         );
     } else if woke_from_timer && boot_aod_time_alert {
-        play_audio_sequence!(
-            "scheduler timer wake clip",
-            AUDIO_ALERT_FIRST_CLIPS,
-            AUDIO_ALERT_MIDDLE_SILENCE_REPEATS,
-            AUDIO_ALERT_LAST_CLIPS,
-            AUDIO_ALERT_TAIL_SILENCE_REPEATS
-        );
+        if alarm_loud_enabled_at_boot {
+            play_loud_alert_signal!("scheduler timer wake loud sine chirp alert");
+        } else {
+            play_audio_sequence!(
+                "scheduler timer wake clip",
+                AUDIO_ALERT_FIRST_CLIPS,
+                AUDIO_ALERT_MIDDLE_SILENCE_REPEATS,
+                AUDIO_ALERT_LAST_CLIPS,
+                AUDIO_ALERT_TAIL_SILENCE_REPEATS
+            );
+        }
     } else if woke_from_timer {
         println!("[AUDIO] Scheduler timer wake beep skipped; not near scheduled time");
     }
@@ -1182,6 +1363,7 @@ async fn main(_spawner: Spawner) {
                     // Power page refreshes at 1 Hz — fast enough to see
                     // changes, slow enough not to skew the measurement.
                     Page::Power => Duration::from_secs(1),
+                    Page::AlarmSettings => Duration::from_secs(2),
                     Page::QuickView => Duration::from_secs(2),
                 },
                 #[cfg(feature = "app-launcher")]
@@ -1250,27 +1432,33 @@ async fn main(_spawner: Spawner) {
                 screen_state = 1;
                 aod_entered_at = now;
                 aod_last_minute = 99;
+            } else if current_page == Page::AlarmSettings {
+                current_page = Page::Aod;
+                display.set_brightness(AOD_BRIGHTNESS);
+                screen_state = 1;
+                aod_entered_at = now;
+                aod_last_minute = 99;
             } else {
                 current_page = Page::QuickView;
-                quick_view_show_set_key = true;
                 if !quick_view_loaded {
                     match rtc.get_alert_time() {
                         Ok(alert_time) => {
                             rtc_alert_time = alert_time;
-                            if let Some((hours, minutes)) = alert_time {
-                                quick_view_time_digits = [
-                                    Some(hours / 10),
-                                    Some(hours % 10),
-                                    Some(minutes / 10),
-                                    Some(minutes % 10),
-                                ];
-                                quick_view_time_len = quick_view_time_digits.len();
-                            } else {
-                                quick_view_time_digits = [None; 4];
-                                quick_view_time_len = 0;
-                            }
+                            sync_quick_view_alert_entry(
+                                rtc_alert_time,
+                                &mut quick_view_time_digits,
+                                &mut quick_view_time_len,
+                                &mut quick_view_show_set_key,
+                            );
                         }
-                        Err(_) => {}
+                        Err(_) => {
+                            sync_quick_view_alert_entry(
+                                rtc_alert_time,
+                                &mut quick_view_time_digits,
+                                &mut quick_view_time_len,
+                                &mut quick_view_show_set_key,
+                            );
+                        }
                     }
                     quick_view_loaded = true;
                 }
@@ -1544,7 +1732,6 @@ async fn main(_spawner: Spawner) {
                 }
             }
         }
-
         // === Screen sleep/wake state machine ===
         // Levels:
         //   3 = full bright + interactive
@@ -1755,6 +1942,11 @@ async fn main(_spawner: Spawner) {
                         let _ = rtc.disable_alert_time();
                         rtc_alert_time = None;
                         quick_view_loaded = false;
+                        clear_quick_view_alert_entry(
+                            &mut quick_view_time_digits,
+                            &mut quick_view_time_len,
+                            &mut quick_view_show_set_key,
+                        );
                     }
                     if let Ok(pct) = power.get_battery_percent() {
                         watchface.update_battery(pct, batt_mv, charging);
@@ -1812,7 +2004,11 @@ async fn main(_spawner: Spawner) {
                                 &mut fb,
                                 &quick_view_time_digits,
                                 quick_view_show_set_key,
+                                alarm_loud_enabled,
                             );
+                        }
+                        Page::AlarmSettings => {
+                            let _ = pages::draw_alarm_settings_page(&mut fb, alarm_loud_enabled);
                         }
                         _ => {}
                     }
@@ -1834,6 +2030,11 @@ async fn main(_spawner: Spawner) {
                                     let _ = rtc.disable_alert_time();
                                     rtc_alert_time = None;
                                     quick_view_loaded = false;
+                                    clear_quick_view_alert_entry(
+                                        &mut quick_view_time_digits,
+                                        &mut quick_view_time_len,
+                                        &mut quick_view_show_set_key,
+                                    );
                                 }
                                 if let Ok(pct) = power.get_battery_percent() {
                                     watchface.update_battery(pct, batt_mv, charging);
@@ -1844,14 +2045,12 @@ async fn main(_spawner: Spawner) {
                         }
                     }
                     Page::Clock => {
-                        // Only render if WatchFace says something is dirty.
                         if watchface.needs_render() {
                             let _ = watchface.render(&mut fb);
                             need_flush = true;
                         }
                     }
                     Page::Sensors => {
-                        // Sensors page is repainted at the loop tick rate (10 Hz).
                         let ax = (accel.0 * 100.0) as i16;
                         let ay = (accel.1 * 100.0) as i16;
                         let az = (accel.2 * 100.0) as i16;
@@ -1869,9 +2068,6 @@ async fn main(_spawner: Spawner) {
                         need_flush = true;
                     }
                     Page::Power => {
-                        // Refresh the snapshot + redraw at ~1 Hz. Any faster
-                        // and the diagnostic itself starts to skew the
-                        // measurement it's supposed to report.
                         if now >= next_watchface_flush {
                             update_power_stats(
                                 &mut power_stats,
@@ -1889,7 +2085,7 @@ async fn main(_spawner: Spawner) {
                             next_watchface_flush = now + Duration::from_secs(1);
                         }
                     }
-                    Page::System | Page::QuickView => {} // Static, already rendered
+                    Page::System | Page::AlarmSettings | Page::QuickView => {}
                 }
                 // Only flush if we actually drew something. The TE wait + 402 KB DMA
                 // is by far the heaviest periodic operation in the firmware, so we
@@ -1965,7 +2161,12 @@ async fn main(_spawner: Spawner) {
                 // QuickView numpad input. Digits fill HHMM from left to right;
                 // the colon is rendered by the view and is not entered.
                 if current_page == Page::QuickView && tap_event {
-                    if let Some(key) = pages::quick_view_key_at(last_touch_x, last_touch_y) {
+                    if pages::quick_view_loud_toggle_at(last_touch_x, last_touch_y) {
+                        alarm_loud_enabled = !alarm_loud_enabled;
+                        let _ = rtc.set_loud_flag(alarm_loud_enabled);
+                        page_dirty = true;
+                        next_watchface_flush = now;
+                    } else if let Some(key) = pages::quick_view_key_at(last_touch_x, last_touch_y) {
                         match key {
                             pages::QuickViewKey::Digit(digit) => {
                                 if quick_view_time_len < quick_view_time_digits.len() {
@@ -1975,9 +2176,11 @@ async fn main(_spawner: Spawner) {
                                 }
                             }
                             pages::QuickViewKey::Clear => {
-                                quick_view_time_digits = [None; 4];
-                                quick_view_time_len = 0;
-                                quick_view_show_set_key = true;
+                                clear_quick_view_alert_entry(
+                                    &mut quick_view_time_digits,
+                                    &mut quick_view_time_len,
+                                    &mut quick_view_show_set_key,
+                                );
                                 page_dirty = true;
                             }
                             pages::QuickViewKey::Set if quick_view_show_set_key => {
@@ -1997,10 +2200,16 @@ async fn main(_spawner: Spawner) {
                                 } else {
                                     let _ = rtc.disable_alert_time();
                                     rtc_alert_time = None;
-                                    quick_view_time_digits = [None; 4];
+                                    clear_quick_view_alert_entry(
+                                        &mut quick_view_time_digits,
+                                        &mut quick_view_time_len,
+                                        &mut quick_view_show_set_key,
+                                    );
                                 }
-                                quick_view_time_len = quick_view_time_digits.len();
-                                quick_view_show_set_key = false;
+                                if had_input {
+                                    quick_view_time_len = quick_view_time_digits.len();
+                                    quick_view_show_set_key = false;
+                                }
                                 page_dirty = true;
                             }
                             pages::QuickViewKey::Set => {}
